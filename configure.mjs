@@ -1,9 +1,13 @@
 export function configurePage(catalogs, selected, hasToken, networkOrigin) {
   const categories = [
     { id: 'all', name: 'All Catalogs' },
-    { id: 'public', name: 'Public Catalogs' },
-    { id: 'trakt', name: 'Trakt Watchlists & History' },
-    { id: 'simkl', name: 'SIMKL Watchlists & History' },
+    { id: 'public', name: 'General Trends' },
+    { id: 'streaming', name: 'Streaming Networks' },
+    { id: 'curated', name: 'Curated & Franchises' },
+    { id: 'vod', name: 'IPTV / VOD' },
+    { id: 'hybrid', name: 'Hybrid & Cross-Filtered' },
+    { id: 'trakt', name: 'Trakt' },
+    { id: 'simkl', name: 'SIMKL' },
     { id: 'homeserver', name: 'Home Servers' },
   ];
 
@@ -101,6 +105,39 @@ export function configurePage(catalogs, selected, hasToken, networkOrigin) {
     font-size: 13px;
     color: #93c5fd;
     line-height: 1.5;
+  }
+  .presets-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    background: #14161f;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 10px;
+    padding: 10px 14px;
+    margin-bottom: 20px;
+  }
+  .presets-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: #e5e7eb;
+    margin-right: 4px;
+  }
+  .preset-btn {
+    background: #1e2230;
+    color: #d1d5db;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 120ms ease;
+  }
+  .preset-btn:hover {
+    background: #2b3247;
+    color: #fff;
+    border-color: rgba(255, 255, 255, 0.2);
   }
   .tabs {
     display: flex;
@@ -327,6 +364,16 @@ export function configurePage(catalogs, selected, hasToken, networkOrigin) {
 
     ${hasToken ? '' : '<div class="info-banner" style="color:#fcd34d; border-color: rgba(245, 158, 11, 0.3); background: rgba(245, 158, 11, 0.08);">⚠️ Server operator: set <code>TMDB_READ_TOKEN</code> in <code>.env.local</code> to enable full title previews and artwork.</div>'}
 
+    <div class="presets-bar">
+      <span class="presets-label">⚡ Quick Presets:</span>
+      <button type="button" class="preset-btn" data-preset="trends">Public Trends</button>
+      <button type="button" class="preset-btn" data-preset="streamer">The Streamer</button>
+      <button type="button" class="preset-btn" data-preset="vod">IPTV & VOD</button>
+      <button type="button" class="preset-btn" data-preset="selfhost">Self-Hoster & Trackers</button>
+      <button type="button" class="preset-btn" data-preset="anime">Anime & Animation</button>
+      <button type="button" class="preset-btn" data-preset="clear" style="margin-left:auto;">Clear All</button>
+    </div>
+
     <div class="tabs">
       ${categories.map((c) => `<button type="button" class="tab-button ${c.id === 'all' ? 'active' : ''}" data-category="${c.id}">${c.name}</button>`).join('')}
     </div>
@@ -399,6 +446,26 @@ export function configurePage(catalogs, selected, hasToken, networkOrigin) {
       urlInput.select();
       statusEl.textContent = 'URL selected. Press Ctrl+C / Cmd+C to copy.';
     }
+  });
+
+  // Presets handling
+  const presets = {
+    trends: ['trending-movies', 'trending-shows', 'popular-movies', 'popular-shows', 'top-rated-movies', 'top-rated-shows'],
+    streamer: ['netflix-movies', 'netflix-shows', 'apple-tv-shows', 'disney-plus-movies', 'hbo-max-shows', 'prime-movies'],
+    vod: ['trending-movies', 'vod-recent-movies', 'vod-recent-shows', 'hybrid-trending-vod-movies', 'hybrid-watchlist-vod-movies'],
+    selfhost: ['homeserver-movies', 'homeserver-shows', 'trakt-watchlist-movies', 'trakt-watchlist-shows', 'hybrid-watchlist-server-movies'],
+    anime: ['anime-trending-shows', 'ghibli-movies', 'simkl-plan-shows'],
+    clear: [],
+  };
+
+  document.querySelectorAll('.preset-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const targetIds = presets[btn.dataset.preset] || [];
+      checkboxes.forEach((cb) => {
+        cb.checked = targetIds.includes(cb.value);
+      });
+      updateManifestUrl();
+    });
   });
 
   // Tab switching

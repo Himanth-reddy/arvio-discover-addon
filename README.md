@@ -2,12 +2,22 @@
 
 A standalone catalog and metadata addon designed for ARVIO and Stremio-compatible media apps.
 
-## Architecture
+## Catalog Ecosystem
 
-1. **Public Catalogs**: Served directly by this addon server using the TMDB API (Trending Movies, Trending Shows, Coming Soon, Top Rated, and Popular).
-2. **Private Delegated Rows**: Uses ARVIO's client-side delegation protocol (`clientDelegate` URIs). Rows like Trakt Watchlists, Trakt Watched History, SIMKL Plan to Watch, and Home Server libraries are declared in the manifest with a capability URI (e.g. `clientDelegate: "trakt:watchlist?type=movie"`).
-   - **Zero Token Sharing**: ARVIO resolves delegated rows directly on-device using the user's active profile connections.
-   - **Privacy First**: User credentials, watch history, and private home server IPs are never transmitted to this addon server.
+1. **Public & Streaming Catalogs**:
+   - General Trends: Weekly Trending, Coming Soon, Top Rated, and Popular.
+   - Streaming Networks: Popular on Netflix, HBO Max, Disney+, Apple TV+, and Prime Video.
+   - Curated Franchises: Trending Anime, Studio Ghibli Masterpieces, and A24 Films.
+2. **Private Tracker Delegation (`clientDelegate`)**:
+   - Trakt: Personal Watchlists and Watched History (`trakt:watchlist`, `trakt:watched`).
+   - SIMKL: Plan to Watch and Completed Lists (`simkl:plantowatch`, `simkl:completed`).
+3. **Local Home Server & IPTV VOD Delegation (`clientDelegate`)**:
+   - Home Server: Direct access to connected Jellyfin, Emby, and Plex libraries (`homeserver:library`).
+   - IPTV / VOD: Recently added VOD movies and series from connected Xtream/Stalker playlists (`vod:recent`, `vod:categories`).
+4. **Hybrid & Cross-Filtered Catalogs (`clientFilter`)**:
+   - Cross-references curated TMDB trends and personal watchlists against local IPTV VOD or Home Server storage (`clientFilter: "vod:available"`, `clientFilter: "homeserver:available"`).
+5. **Configurator Presets**:
+   - 1-click presets: *Public Trends*, *The Streamer*, *IPTV & VOD*, *Self-Hoster & Trackers*, and *Anime & Animation*.
 
 ## Run Locally
 

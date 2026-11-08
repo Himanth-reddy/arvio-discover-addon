@@ -13,6 +13,7 @@ export const catalogs = [
     category: 'public',
     description: 'Weekly trending films across worldwide box office and streaming.',
     path: '/trending/movie/week',
+    isDefault: true,
   },
   {
     id: 'trending-shows',
@@ -21,6 +22,7 @@ export const catalogs = [
     category: 'public',
     description: 'Top trending series and television shows this week.',
     path: '/trending/tv/week',
+    isDefault: true,
   },
   {
     id: 'coming-soon',
@@ -29,6 +31,7 @@ export const catalogs = [
     category: 'public',
     description: 'Upcoming theatrical premieres and digital releases.',
     path: '/movie/upcoming',
+    isDefault: true,
   },
   {
     id: 'popular-movies',
@@ -37,6 +40,7 @@ export const catalogs = [
     category: 'public',
     description: 'Most popular films of all time and current hits.',
     path: '/movie/popular',
+    isDefault: true,
   },
   {
     id: 'popular-shows',
@@ -45,6 +49,7 @@ export const catalogs = [
     category: 'public',
     description: 'High-rated and broadly watched television series.',
     path: '/tv/popular',
+    isDefault: true,
   },
   {
     id: 'top-rated-movies',
@@ -53,6 +58,7 @@ export const catalogs = [
     category: 'public',
     description: 'Highest audience and critic rated movies.',
     path: '/movie/top_rated',
+    isDefault: true,
   },
   {
     id: 'top-rated-shows',
@@ -61,6 +67,83 @@ export const catalogs = [
     category: 'public',
     description: 'Highest audience and critic rated series.',
     path: '/tv/top_rated',
+    isDefault: true,
+  },
+
+  // Streaming Networks (Public TMDB Discover)
+  {
+    id: 'netflix-movies',
+    type: 'movie',
+    name: 'Popular on Netflix · Movies',
+    category: 'streaming',
+    description: 'Top trending and popular films streaming on Netflix.',
+    path: '/discover/movie?with_watch_providers=8&watch_region=US&sort_by=popularity.desc',
+  },
+  {
+    id: 'netflix-shows',
+    type: 'series',
+    name: 'Popular on Netflix · Shows',
+    category: 'streaming',
+    description: 'Binge-worthy and trending television series on Netflix.',
+    path: '/discover/tv?with_watch_providers=8&watch_region=US&sort_by=popularity.desc',
+  },
+  {
+    id: 'apple-tv-shows',
+    type: 'series',
+    name: 'Top on Apple TV+ · Shows',
+    category: 'streaming',
+    description: 'Critically acclaimed original series on Apple TV+.',
+    path: '/discover/tv?with_watch_providers=350&watch_region=US&sort_by=popularity.desc',
+  },
+  {
+    id: 'disney-plus-movies',
+    type: 'movie',
+    name: 'Popular on Disney+ · Movies',
+    category: 'streaming',
+    description: 'Disney, Pixar, Marvel, and Star Wars movies streaming on Disney+.',
+    path: '/discover/movie?with_watch_providers=337&watch_region=US&sort_by=popularity.desc',
+  },
+  {
+    id: 'hbo-max-shows',
+    type: 'series',
+    name: 'Top on HBO Max · Shows',
+    category: 'streaming',
+    description: 'Hit drama, prestige television, and comedy series streaming on Max.',
+    path: '/discover/tv?with_watch_providers=1899&watch_region=US&sort_by=popularity.desc',
+  },
+  {
+    id: 'prime-movies',
+    type: 'movie',
+    name: 'Popular on Prime Video · Movies',
+    category: 'streaming',
+    description: 'Featured theatrical hits and Amazon Originals on Prime Video.',
+    path: '/discover/movie?with_watch_providers=9&watch_region=US&sort_by=popularity.desc',
+  },
+
+  // Curated Franchises & Themes (Public TMDB)
+  {
+    id: 'anime-trending-shows',
+    type: 'series',
+    name: 'Trending Anime · Series',
+    category: 'curated',
+    description: 'Popular Japanese animation series, simulcasts, and season hits.',
+    path: '/discover/tv?with_genres=16&with_original_language=ja&sort_by=popularity.desc',
+  },
+  {
+    id: 'ghibli-movies',
+    type: 'movie',
+    name: 'Studio Ghibli Masterpieces',
+    category: 'curated',
+    description: 'Timeless animated classics from Hayao Miyazaki and Studio Ghibli.',
+    path: '/discover/movie?with_companies=10342&sort_by=popularity.desc',
+  },
+  {
+    id: 'a24-movies',
+    type: 'movie',
+    name: 'A24 Films Spotlight',
+    category: 'curated',
+    description: 'Award-winning indie hits, dramas, and thrillers produced by A24.',
+    path: '/discover/movie?with_companies=41077&sort_by=popularity.desc',
   },
 
   // Delegated Trakt Catalogs (Resolved on-device by ARVIO using active profile's Trakt session)
@@ -158,6 +241,76 @@ export const catalogs = [
     clientDelegate: 'homeserver:library?type=tv',
     requiresDelegate: true,
   },
+
+  // Delegated VOD Catalogs (Resolved on-device by ARVIO using connected IPTV / Xtream / Stalker playlists)
+  {
+    id: 'vod-recent-movies',
+    type: 'movie',
+    name: 'IPTV VOD · Recently Added Movies',
+    category: 'vod',
+    description: 'Latest movies added to your connected IPTV / Xtream Codes playlist.',
+    clientDelegate: 'vod:recent?type=movie',
+    requiresDelegate: true,
+  },
+  {
+    id: 'vod-recent-shows',
+    type: 'series',
+    name: 'IPTV VOD · Recently Added Shows',
+    category: 'vod',
+    description: 'Latest series and episodes added to your connected IPTV / Xtream Codes playlist.',
+    clientDelegate: 'vod:recent?type=series',
+    requiresDelegate: true,
+  },
+  {
+    id: 'vod-categories-movies',
+    type: 'movie',
+    name: 'IPTV VOD · Movie Categories',
+    category: 'vod',
+    description: 'Top VOD movie categories from your active IPTV / Stalker portal.',
+    clientDelegate: 'vod:categories?type=movie',
+    requiresDelegate: true,
+  },
+  {
+    id: 'vod-categories-shows',
+    type: 'series',
+    name: 'IPTV VOD · Series Categories',
+    category: 'vod',
+    description: 'Top VOD series categories from your active IPTV / Stalker portal.',
+    clientDelegate: 'vod:categories?type=series',
+    requiresDelegate: true,
+  },
+
+  // Hybrid & Cross-Filtered Rows (Cross-referencing curated catalogs with local availability)
+  {
+    id: 'hybrid-trending-vod-movies',
+    type: 'movie',
+    name: 'Trending Movies · Available on IPTV',
+    category: 'hybrid',
+    description: 'Weekly trending films filtered to only titles available in your IPTV VOD.',
+    clientDelegate: 'hybrid:trending?source=tmdb&filter=vod&type=movie',
+    clientFilter: 'vod:available',
+    requiresDelegate: true,
+  },
+  {
+    id: 'hybrid-watchlist-vod-movies',
+    type: 'movie',
+    name: 'Trakt Watchlist · Available on IPTV',
+    category: 'hybrid',
+    description: 'Trakt Watchlist titles matched with your connected IPTV VOD library.',
+    clientDelegate: 'hybrid:watchlist?tracker=trakt&filter=vod&type=movie',
+    clientFilter: 'vod:available',
+    requiresDelegate: true,
+  },
+  {
+    id: 'hybrid-watchlist-server-movies',
+    type: 'movie',
+    name: 'Trakt Watchlist · On Home Server',
+    category: 'hybrid',
+    description: 'Trakt Watchlist movies verified to be downloaded on your Jellyfin/Emby/Plex server.',
+    clientDelegate: 'hybrid:watchlist?tracker=trakt&filter=homeserver&type=movie',
+    clientFilter: 'homeserver:available',
+    requiresDelegate: true,
+  },
 ];
 
 const types = ['movie', 'series'];
@@ -215,11 +368,12 @@ export function manifest(selected) {
     types,
     resources: ['catalog', { name: 'meta', types, idPrefixes: [prefix] }],
     behaviorHints: { configurable: true },
-    catalogs: selected.map(({ id, type, name, clientDelegate }) => ({
+    catalogs: selected.map(({ id, type, name, clientDelegate, clientFilter }) => ({
       id,
       type,
       name,
       ...(clientDelegate ? { clientDelegate } : {}),
+      ...(clientFilter ? { clientFilter } : {}),
     })),
   };
 }
@@ -285,7 +439,7 @@ export function createAddonServer({ token = process.env.TMDB_READ_TOKEN, fetcher
       const selectedIds = parts[0] === 'c' ? parts.splice(0, 2)[1]?.split(',') : null;
       const selected = selectedIds
         ? catalogs.filter(({ id }) => selectedIds.includes(id))
-        : catalogs.filter((row) => !row.requiresDelegate);
+        : catalogs.filter((row) => row.isDefault);
 
       if (!selected.length || (selectedIds && selected.length !== selectedIds.length)) {
         throw new RequestError(404, 'Unknown catalog selection.');
