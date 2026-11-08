@@ -8,7 +8,7 @@ async function start(t, options) {
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
-  return (path) => fetch(`http://127.0.0.1:${server.address().port}${path}`);
+  return (path, init) => fetch(`http://127.0.0.1:${server.address().port}${path}`, init);
 }
 
 test('a configured manifest serves only its selected rows and resolves their title metadata', async (t) => {
@@ -152,4 +152,115 @@ test('vod and hybrid catalogs declare clientDelegate and clientFilter in manifes
     const body = await response.json();
     assert.match(body.error, /client-side delegation/);
   }
+});
+
+test('profile-scoped configurations update dynamically without changing manifest URL', async (t) => {
+  const { ConfigStore } = await import('./server.mjs');
+  const store = new ConfigStore(); // in-memory store
+  const request = await start(t, {
+    token: 'test-token',
+    configStore: store,
+  });
+
+  // 1. Initial manifest for profile "himanth" defaults to core rows
+  const initialManifest = await (await request('/p/himanth/manifest.json')).json();
+  assert.equal(initialManifest.catalogs.length, 7);
+
+  // 2. User customizes profile "himanth" via API
+  const saveRes = await request('/api/config/himanth', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ selectedIds: ['netflix-movies', 'vod-recent-movies'] }),
+  });
+  assert.equal(saveRes.status, 200);
+  const saveJson = await saveRes.json();
+  assert.equal(saveJson.ok, true);
+  assert.equal(saveJson.count, 2);
+
+  // 3. The exact same manifest URL now immediately returns the 2 updated rows!
+  const updatedManifest = await (await request('/p/himanth/manifest.json')).json();
+  assert.deepEqual(
+    updatedManifest.catalogs.map((c) => c.id),
+    ['netflix-movies', 'vod-recent-movies']
+  );
+
+  // 4. Checking config endpoint
+  const getRes = await (await request('/api/config/himanth')).json();
+  assert.deepEqual(getRes.selectedIds, ['netflix-movies', 'vod-recent-movies']);
+});
+
+test('arvio direct login and cloud profile sync pushes addon directly to TV profile', async (t) => {
+  const pushedPayloads = [];
+  const request = await start(t, {
+    token: 'test-token',
+    arvioBackendUrl: 'https://auth.mock.arvio',
+    arvioAnonKey: 'mock-anon-key',
+    fetcher: async (url, options) => {
+      const path = url.toString();
+      if (path.includes('/auth-login')) {
+        const body = JSON.parse(options.body);
+        assert.equal(body.email, 'test@example.com');
+        assert.equal(body.password, 'secret');
+        return Response.json({
+          access_token: 'mock-arvio-jwt',
+          user: { id: 'usr-123', email: 'test@example.com' },
+        });
+      }
+      if (path.includes('/account-sync-pull')) {
+        assert.equal(options.headers.Authorization, 'Bearer mock-arvio-jwt');
+        return Response.json({
+          payload: {
+            profiles: [
+              { id: 'prof-living-room', name: 'Living Room' },
+              { id: 'prof-kids', name: 'Kids' },
+            ],
+            activeProfileId: 'prof-living-room',
+            addonsByProfile: {},
+            addons: [],
+          },
+        });
+      }
+      if (path.includes('/account-sync-push')) {
+        const body = JSON.parse(options.body);
+        pushedPayloads.push(body.payload);
+        return Response.json({ accepted: true });
+      }
+      assert.fail(`Unexpected network call: ${path}`);
+    },
+  });
+
+  // 1. Log in to ARVIO
+  const loginRes = await request('/api/arvio/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'test@example.com', password: 'secret' }),
+  });
+  assert.equal(loginRes.status, 200);
+  const loginData = await loginRes.json();
+  assert.equal(loginData.ok, true);
+  assert.equal(loginData.token, 'mock-arvio-jwt');
+  assert.equal(loginData.profiles.length, 2);
+  assert.equal(loginData.activeProfileId, 'prof-living-room');
+
+  // 2. Sync selected rows to Living Room profile
+  const syncRes = await request('/api/arvio/sync', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      token: loginData.token,
+      profileId: 'prof-living-room',
+      manifestUrl: 'http://127.0.0.1:8787/p/prof-living-room/manifest.json',
+      selectedIds: ['trending-movies', 'prime-movies'],
+    }),
+  });
+  assert.equal(syncRes.status, 200);
+  const syncData = await syncRes.json();
+  assert.equal(syncData.ok, true);
+
+  // 3. Verify pushed cloud payload contains tv.arvio.discover for the profile!
+  assert.equal(pushedPayloads.length, 1);
+  const profileAddons = pushedPayloads[0].addonsByProfile['prof-living-room'];
+  assert.equal(profileAddons.length, 1);
+  assert.equal(profileAddons[0].id, 'tv.arvio.discover');
+  assert.equal(profileAddons[0].url, 'http://127.0.0.1:8787/p/prof-living-room/manifest.json');
 });

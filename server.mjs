@@ -2,7 +2,49 @@ import { createServer } from 'node:http';
 import { networkInterfaces } from 'node:os';
 import { loadEnvFile } from 'node:process';
 import { pathToFileURL } from 'node:url';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { configurePage } from './configure.mjs';
+
+export class ConfigStore {
+  constructor(filePath) {
+    this.filePath = filePath;
+    this.configs = new Map();
+    this.load();
+  }
+
+  load() {
+    if (!this.filePath) return;
+    try {
+      const data = JSON.parse(readFileSync(this.filePath, 'utf-8'));
+      for (const [id, value] of Object.entries(data)) {
+        this.configs.set(id, Array.isArray(value) ? value : value?.selectedIds || []);
+      }
+    } catch {
+      // file might not exist yet, that's fine
+    }
+  }
+
+  save() {
+    if (!this.filePath) return;
+    try {
+      mkdirSync(dirname(this.filePath), { recursive: true });
+      const obj = Object.fromEntries(this.configs);
+      writeFileSync(this.filePath, JSON.stringify(obj, null, 2), 'utf-8');
+    } catch (e) {
+      console.error('Failed to save configs:', e.message);
+    }
+  }
+
+  get(profileId) {
+    return this.configs.get(profileId);
+  }
+
+  set(profileId, selectedIds) {
+    this.configs.set(profileId, selectedIds);
+    this.save();
+  }
+}
 
 export const catalogs = [
   // Public Catalogs (Resolved by this addon server via TMDB)
@@ -378,7 +420,24 @@ export function manifest(selected) {
   };
 }
 
-export function createAddonServer({ token = process.env.TMDB_READ_TOKEN, fetcher = fetch, networkAddress } = {}) {
+async function readJson(request) {
+  let body = '';
+  for await (const chunk of request) body += chunk;
+  try {
+    return JSON.parse(body || '{}');
+  } catch {
+    throw new RequestError(400, 'Invalid JSON body.');
+  }
+}
+
+export function createAddonServer({
+  token = process.env.TMDB_READ_TOKEN,
+  fetcher = fetch,
+  networkAddress,
+  configStore = new ConfigStore(new URL('./data/configs.json', import.meta.url).pathname),
+  arvioBackendUrl = process.env.ARVIO_BACKEND_URL || 'https://auth.arvio.tv/.netlify/functions',
+  arvioAnonKey = process.env.ARVIO_APP_ANON_KEY || '',
+} = {}) {
   const cache = new Map();
 
   async function tmdb(path) {
@@ -424,19 +483,196 @@ export function createAddonServer({ token = process.env.TMDB_READ_TOKEN, fetcher
         response.writeHead(204, {
           'Access-Control-Allow-Origin': '*',
           'Access-Control-Allow-Headers': '*',
-          'Access-Control-Allow-Methods': 'GET, OPTIONS',
+          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
         });
         return response.end();
       }
 
+      const url = new URL(request.url, 'http://localhost');
+      const parts = url.pathname.slice(1).split('/').map(decodeURIComponent);
+
+      // --- API Endpoints ---
+      if (parts[0] === 'api') {
+        // GET /api/config/:profileId
+        // POST /api/config/:profileId
+        if (parts[1] === 'config' && parts[2]) {
+          const profileId = parts[2];
+          if (request.method === 'GET') {
+            const selectedIds = configStore.get(profileId) || catalogs.filter((r) => r.isDefault).map((r) => r.id);
+            return json(response, 200, { profileId, selectedIds });
+          }
+          if (request.method === 'POST') {
+            const body = await readJson(request);
+            const selectedIds = Array.isArray(body.selectedIds) ? body.selectedIds : [];
+            configStore.set(profileId, selectedIds);
+            return json(response, 200, { ok: true, profileId, selectedIds, count: selectedIds.length });
+          }
+        }
+
+        // POST /api/arvio/login
+        if (parts[1] === 'arvio' && parts[2] === 'login' && request.method === 'POST') {
+          const { email, password } = await readJson(request);
+          if (!email || !password) throw new RequestError(400, 'Email and password are required.');
+
+          const authRes = await fetcher(`${arvioBackendUrl}/auth-login`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              apikey: arvioAnonKey,
+              Authorization: `Bearer ${arvioAnonKey}`,
+            },
+            body: JSON.stringify({ email, password }),
+            signal: AbortSignal.timeout(10000),
+          });
+          const authData = await authRes.json();
+          if (!authRes.ok) {
+            throw new RequestError(authRes.status || 401, authData.message || authData.error || 'ARVIO login failed.');
+          }
+
+          const token = authData.access_token;
+          const user = authData.user || { email, id: authData.id || email };
+
+          let profiles = [];
+          let activeProfileId = null;
+          try {
+            const syncRes = await fetcher(`${arvioBackendUrl}/account-sync-pull`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                apikey: arvioAnonKey,
+                Authorization: `Bearer ${token}`,
+              },
+              signal: AbortSignal.timeout(10000),
+            });
+            if (syncRes.ok) {
+              const syncData = await syncRes.json();
+              const payload = syncData.payload || {};
+              profiles = Array.isArray(payload.profiles) ? payload.profiles : [];
+              activeProfileId = payload.activeProfileId || (profiles[0]?.id ?? null);
+            }
+          } catch (e) {
+            console.warn('Could not pull account sync profiles:', e.message);
+          }
+
+          if (!profiles.length) {
+            profiles = [{ id: 'default', name: user.email.split('@')[0] || 'Default' }];
+            activeProfileId = 'default';
+          }
+
+          return json(response, 200, {
+            ok: true,
+            token,
+            user: { id: user.id, email: user.email },
+            profiles,
+            activeProfileId,
+          });
+        }
+
+        // POST /api/arvio/sync
+        if (parts[1] === 'arvio' && parts[2] === 'sync' && request.method === 'POST') {
+          const { token, profileId, manifestUrl, selectedIds } = await readJson(request);
+          if (!token || !profileId) throw new RequestError(400, 'Token and profileId are required.');
+
+          if (Array.isArray(selectedIds)) {
+            configStore.set(profileId, selectedIds);
+          }
+
+          // Pull current sync state from ARVIO
+          const pullRes = await fetcher(`${arvioBackendUrl}/account-sync-pull`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              apikey: arvioAnonKey,
+              Authorization: `Bearer ${token}`,
+            },
+            signal: AbortSignal.timeout(10000),
+          });
+
+          if (!pullRes.ok) {
+            throw new RequestError(pullRes.status || 500, 'Failed to fetch current ARVIO profile sync state.');
+          }
+
+          const pullData = await pullRes.json();
+          const payload = pullData.payload || {};
+
+          // Update addonsByProfile[profileId]
+          const addonsByProfile = payload.addonsByProfile || {};
+          const profileAddons = Array.isArray(addonsByProfile[profileId]) ? [...addonsByProfile[profileId]] : [];
+
+          const existingIndex = profileAddons.findIndex((a) => a.id === 'tv.arvio.discover');
+          const discoverEntry = {
+            id: 'tv.arvio.discover',
+            name: 'ARVIO Discover',
+            url: manifestUrl,
+            version: '1.0.0',
+          };
+
+          if (existingIndex >= 0) {
+            profileAddons[existingIndex] = discoverEntry;
+          } else {
+            profileAddons.push(discoverEntry);
+          }
+          addonsByProfile[profileId] = profileAddons;
+          payload.addonsByProfile = addonsByProfile;
+
+          // Also ensure root addons has it
+          const rootAddons = Array.isArray(payload.addons) ? [...payload.addons] : [];
+          const rootIdx = rootAddons.findIndex((a) => a.id === 'tv.arvio.discover');
+          if (rootIdx >= 0) {
+            rootAddons[rootIdx] = discoverEntry;
+          } else {
+            rootAddons.push(discoverEntry);
+          }
+          payload.addons = rootAddons;
+          payload.addonsUpdatedAt = Date.now();
+
+          // Push updated state back to ARVIO Cloud
+          const pushRes = await fetcher(`${arvioBackendUrl}/account-sync-push`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              apikey: arvioAnonKey,
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({ payload }),
+            signal: AbortSignal.timeout(10000),
+          });
+
+          const pushData = await pushRes.json();
+          if (!pushRes.ok || pushData.accepted === false) {
+            throw new RequestError(pushRes.status || 500, pushData.reason || 'ARVIO cloud sync rejected update.');
+          }
+
+          return json(response, 200, {
+            ok: true,
+            profileId,
+            manifestUrl,
+            syncedAt: Date.now(),
+          });
+        }
+
+        throw new RequestError(404, 'API endpoint not found.');
+      }
+
       if (request.method !== 'GET') {
-        response.setHeader('Allow', 'GET, OPTIONS');
+        response.setHeader('Allow', 'GET, POST, OPTIONS');
         throw new RequestError(405, 'Use GET.');
       }
 
-      const url = new URL(request.url, 'http://localhost');
-      const parts = url.pathname.slice(1).split('/').map(decodeURIComponent);
-      const selectedIds = parts[0] === 'c' ? parts.splice(0, 2)[1]?.split(',') : null;
+      // --- Scope Resolution (Profile / Inline / Default) ---
+      let currentProfileId = 'default';
+      let selectedIds = null;
+
+      if (parts[0] === 'p' && parts[1]) {
+        currentProfileId = parts[1];
+        parts.splice(0, 2);
+        selectedIds = configStore.get(currentProfileId);
+      } else if (parts[0] === 'c' && parts[1]) {
+        selectedIds = parts.splice(0, 2)[1]?.split(',');
+      } else {
+        selectedIds = configStore.get('default');
+      }
+
       const selected = selectedIds
         ? catalogs.filter(({ id }) => selectedIds.includes(id))
         : catalogs.filter((row) => row.isDefault);
@@ -449,7 +685,7 @@ export function createAddonServer({ token = process.env.TMDB_READ_TOKEN, fetcher
       if (parts.length === 1 && ['', 'configure'].includes(parts[0])) {
         response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
         const networkOrigin = networkAddress ? `http://${networkAddress}:${request.socket.localPort}` : '';
-        return response.end(configurePage(catalogs, selected, Boolean(token), networkOrigin));
+        return response.end(configurePage(catalogs, selected, Boolean(token), networkOrigin, currentProfileId));
       }
 
       // Manifest

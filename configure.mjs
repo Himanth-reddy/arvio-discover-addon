@@ -1,4 +1,4 @@
-export function configurePage(catalogs, selected, hasToken, networkOrigin) {
+export function configurePage(catalogs, selected, hasToken, networkOrigin, initialProfileId = 'default') {
   const categories = [
     { id: 'all', name: 'All Catalogs' },
     { id: 'public', name: 'General Trends' },
@@ -106,6 +106,151 @@ export function configurePage(catalogs, selected, hasToken, networkOrigin) {
     color: #93c5fd;
     line-height: 1.5;
   }
+  .arvio-connect-card {
+    background: linear-gradient(135deg, rgba(37, 99, 235, 0.12), rgba(147, 51, 234, 0.1));
+    border: 1px solid rgba(59, 130, 246, 0.3);
+    border-radius: 14px;
+    padding: 20px 24px;
+    margin-bottom: 24px;
+  }
+  .connect-header {
+    margin-bottom: 14px;
+  }
+  .connect-title {
+    font-size: 16px;
+    font-weight: 700;
+    color: #fff;
+    margin-bottom: 4px;
+  }
+  .connect-subtitle {
+    font-size: 13px;
+    color: #93c5fd;
+    line-height: 1.4;
+  }
+  .login-form {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .form-input {
+    flex: 1 1 200px;
+    background: #090a0f;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    color: #fff;
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 13px;
+  }
+  .form-input:focus {
+    outline: none;
+    border-color: #3b82f6;
+  }
+  .connect-btn {
+    background: #2563eb;
+    color: #fff;
+    font-weight: 600;
+  }
+  .connect-btn:hover { background: #1d4ed8; }
+  .error-text {
+    font-size: 12px;
+    color: #f87171;
+    margin-top: 8px;
+    min-height: 16px;
+  }
+  .connected-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .user-info {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: #e5e7eb;
+  }
+  .user-email {
+    font-weight: 600;
+  }
+  .text-btn {
+    background: none;
+    border: none;
+    color: #9ca3af;
+    font-size: 12px;
+    text-decoration: underline;
+    cursor: pointer;
+    margin-left: 6px;
+  }
+  .text-btn:hover { color: #f87171; }
+  .sync-btn {
+    background: linear-gradient(135deg, #2563eb, #7c3aed);
+    color: #fff;
+    font-weight: 700;
+    box-shadow: 0 4px 12px rgba(124, 58, 237, 0.3);
+  }
+  .sync-btn:hover { filter: brightness(1.1); }
+  .profile-selection-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    padding-top: 12px;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+  }
+  .profile-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: #cbd5e1;
+  }
+  .profile-pills {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .profile-pill {
+    background: #141724;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    color: #cbd5e1;
+    padding: 6px 14px;
+    border-radius: 20px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 120ms ease;
+  }
+  .profile-pill:hover {
+    border-color: rgba(255, 255, 255, 0.3);
+    color: #fff;
+  }
+  .profile-pill.active {
+    background: #3b82f6;
+    border-color: #60a5fa;
+    color: #fff;
+    font-weight: 700;
+  }
+  .sync-status {
+    font-size: 13px;
+    font-weight: 600;
+    margin-top: 10px;
+    min-height: 18px;
+  }
+  .install-title-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+  }
+  .save-btn {
+    background: #059669;
+    color: #fff;
+    font-weight: 600;
+    padding: 6px 14px;
+    font-size: 12px;
+  }
+  .save-btn:hover { background: #047857; }
   .presets-bar {
     display: flex;
     align-items: center;
@@ -364,6 +509,40 @@ export function configurePage(catalogs, selected, hasToken, networkOrigin) {
 
     ${hasToken ? '' : '<div class="info-banner" style="color:#fcd34d; border-color: rgba(245, 158, 11, 0.3); background: rgba(245, 158, 11, 0.08);">⚠️ Server operator: set <code>TMDB_READ_TOKEN</code> in <code>.env.local</code> to enable full title previews and artwork.</div>'}
 
+    <div class="arvio-connect-card">
+      <div id="arvio-logged-out" class="connect-view">
+        <div class="connect-header">
+          <div class="connect-title">⚡ Connect to ARVIO (Direct Sync)</div>
+          <p class="connect-subtitle">Sign in to sync your customized rows directly to your Android TV profiles. Zero reinstalling.</p>
+        </div>
+        <form id="arvio-login-form" class="login-form">
+          <input id="arvio-email" type="email" placeholder="ARVIO Account Email" required class="form-input">
+          <input id="arvio-password" type="password" placeholder="Password" required class="form-input">
+          <button id="arvio-login-btn" type="submit" class="action-btn connect-btn">Connect ARVIO</button>
+        </form>
+        <div id="arvio-login-error" class="error-text"></div>
+      </div>
+
+      <div id="arvio-logged-in" class="connect-view" style="display:none;">
+        <div class="connected-header">
+          <div class="user-info">
+            <span class="user-icon">👤</span>
+            <span id="arvio-user-email" class="user-email"></span>
+            <button id="arvio-logout-btn" type="button" class="text-btn">Sign Out</button>
+          </div>
+          <button id="sync-arvio-btn" type="button" class="action-btn sync-btn">
+            ⚡ Save & Sync to Profile
+          </button>
+        </div>
+
+        <div class="profile-selection-row">
+          <span class="profile-label">Select Profile to Customize:</span>
+          <div id="profile-tabs" class="profile-pills"></div>
+        </div>
+        <div id="sync-status" class="sync-status"></div>
+      </div>
+    </div>
+
     <div class="presets-bar">
       <span class="presets-label">⚡ Quick Presets:</span>
       <button type="button" class="preset-btn" data-preset="trends">Public Trends</button>
@@ -384,7 +563,10 @@ export function configurePage(catalogs, selected, hasToken, networkOrigin) {
   </div>
 
   <div class="install-box">
-    <div class="install-title">Your Custom Manifest URL</div>
+    <div class="install-title-row">
+      <div class="install-title">Active Manifest for <span id="active-profile-label" style="color:#60a5fa; font-weight:700;">default</span></div>
+      <button id="save-addon-btn" type="button" class="action-btn save-btn">Save to Addon</button>
+    </div>
     <div class="install-row">
       <input id="url" type="url" data-network-origin="${networkOrigin}" readonly class="install-input">
       <button id="copy" type="button" class="action-btn copy-btn">Copy URL</button>
@@ -399,13 +581,35 @@ export function configurePage(catalogs, selected, hasToken, networkOrigin) {
 </main>
 
 <script>
+  let currentProfileId = '${initialProfileId || 'default'}';
+  let arvioSession = null;
+  try {
+    arvioSession = JSON.parse(localStorage.getItem('arvio.discover.session') || 'null');
+  } catch {}
+
   const checkboxes = [...document.querySelectorAll('.catalog-checkbox')];
   const urlInput = document.querySelector('#url');
   const copyBtn = document.querySelector('#copy');
   const installLink = document.querySelector('#stremio-link');
   const statusEl = document.querySelector('#status');
+  const saveAddonBtn = document.querySelector('#save-addon-btn');
   const tabButtons = [...document.querySelectorAll('.tab-button')];
   const cards = [...document.querySelectorAll('.catalog-card')];
+  const profileLabel = document.querySelector('#active-profile-label');
+
+  // ARVIO elements
+  const arvioLoggedOut = document.querySelector('#arvio-logged-out');
+  const arvioLoggedIn = document.querySelector('#arvio-logged-in');
+  const arvioEmailInput = document.querySelector('#arvio-email');
+  const arvioPasswordInput = document.querySelector('#arvio-password');
+  const arvioLoginForm = document.querySelector('#arvio-login-form');
+  const arvioLoginBtn = document.querySelector('#arvio-login-btn');
+  const arvioLoginError = document.querySelector('#arvio-login-error');
+  const arvioUserEmail = document.querySelector('#arvio-user-email');
+  const arvioLogoutBtn = document.querySelector('#arvio-logout-btn');
+  const profileTabs = document.querySelector('#profile-tabs');
+  const syncArvioBtn = document.querySelector('#sync-arvio-btn');
+  const syncStatus = document.querySelector('#sync-status');
 
   const localHosts = ['localhost', '127.0.0.1', '[::1]'];
   const installOrigin = localHosts.includes(location.hostname) && urlInput.dataset.networkOrigin
@@ -421,7 +625,7 @@ export function configurePage(catalogs, selected, hasToken, networkOrigin) {
       statusEl.textContent = 'Select at least one catalog row.';
       return;
     }
-    const manifestPath = '/c/' + ids.join(',') + '/manifest.json';
+    const manifestPath = '/p/' + encodeURIComponent(currentProfileId) + '/manifest.json';
     const absoluteUrl = new URL(manifestPath, installOrigin).href;
     urlInput.value = absoluteUrl;
     copyBtn.disabled = false;
@@ -430,11 +634,165 @@ export function configurePage(catalogs, selected, hasToken, networkOrigin) {
     const cleanProtocol = absoluteUrl.replace(/^https?:\\/\\//, '');
     installLink.href = 'stremio://' + cleanProtocol;
     installLink.style.display = 'inline-flex';
-    statusEl.textContent = ids.length + ' catalog rows selected.';
+    statusEl.textContent = ids.length + ' catalog rows active for ' + currentProfileId + '.';
+    if (profileLabel) profileLabel.textContent = currentProfileId;
   }
 
+  async function loadProfileConfig(profileId) {
+    statusEl.textContent = 'Loading configuration for ' + profileId + '…';
+    try {
+      const res = await fetch('/api/config/' + encodeURIComponent(profileId));
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.selectedIds)) {
+          checkboxes.forEach((cb) => {
+            cb.checked = data.selectedIds.includes(cb.value);
+          });
+        }
+      }
+    } catch (e) {
+      console.warn('Could not load profile config:', e);
+    }
+    updateManifestUrl();
+  }
+
+  async function saveProfileConfig(profileId) {
+    const selectedIds = checkboxes.filter((b) => b.checked).map((b) => b.value);
+    statusEl.textContent = 'Saving configuration for ' + profileId + '…';
+    try {
+      const res = await fetch('/api/config/' + encodeURIComponent(profileId), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ selectedIds }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to save');
+      statusEl.textContent = '✓ Saved setup for ' + profileId + ' (' + data.count + ' rows). Addon will serve these automatically.';
+      statusEl.style.color = '#10b981';
+    } catch (err) {
+      statusEl.textContent = 'Error saving setup: ' + err.message;
+      statusEl.style.color = '#f87171';
+    }
+  }
+
+  function renderProfiles() {
+    if (!arvioSession || !arvioSession.profiles) return;
+    profileTabs.innerHTML = '';
+    const profiles = arvioSession.profiles;
+    profiles.forEach((p) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'profile-pill' + (p.id === currentProfileId ? ' active' : '');
+      btn.textContent = (p.id === arvioSession.activeProfileId ? '★ ' : '') + (p.name || p.id);
+      btn.addEventListener('click', () => {
+        currentProfileId = p.id;
+        document.querySelectorAll('.profile-pill').forEach((el) => el.classList.remove('active'));
+        btn.classList.add('active');
+        loadProfileConfig(currentProfileId);
+      });
+      profileTabs.appendChild(btn);
+    });
+  }
+
+  function syncSessionUi() {
+    if (arvioSession && arvioSession.token) {
+      arvioLoggedOut.style.display = 'none';
+      arvioLoggedIn.style.display = 'block';
+      arvioUserEmail.textContent = arvioSession.user?.email || 'Connected';
+      if (!currentProfileId || currentProfileId === 'default') {
+        currentProfileId = arvioSession.activeProfileId || arvioSession.profiles?.[0]?.id || 'default';
+      }
+      renderProfiles();
+    } else {
+      arvioLoggedOut.style.display = 'block';
+      arvioLoggedIn.style.display = 'none';
+      currentProfileId = 'default';
+    }
+    updateManifestUrl();
+  }
+
+  // Login form handler
+  arvioLoginForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    arvioLoginError.textContent = '';
+    arvioLoginBtn.disabled = true;
+    arvioLoginBtn.textContent = 'Connecting…';
+
+    try {
+      const email = arvioEmailInput.value.trim();
+      const password = arvioPasswordInput.value;
+      const res = await fetch('/api/arvio/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Login failed');
+
+      arvioSession = data;
+      localStorage.setItem('arvio.discover.session', JSON.stringify(data));
+      syncSessionUi();
+      await loadProfileConfig(currentProfileId);
+    } catch (err) {
+      arvioLoginError.textContent = err.message || 'Unable to connect to ARVIO.';
+    } finally {
+      arvioLoginBtn.disabled = false;
+      arvioLoginBtn.textContent = 'Connect ARVIO';
+    }
+  });
+
+  // Logout handler
+  arvioLogoutBtn.addEventListener('click', () => {
+    arvioSession = null;
+    localStorage.removeItem('arvio.discover.session');
+    syncSessionUi();
+  });
+
+  // Direct ARVIO Cloud Sync handler
+  syncArvioBtn.addEventListener('click', async () => {
+    if (!arvioSession || !arvioSession.token) {
+      syncStatus.textContent = 'Please log in to ARVIO first.';
+      syncStatus.style.color = '#f87171';
+      return;
+    }
+    const selectedIds = checkboxes.filter((b) => b.checked).map((b) => b.value);
+    syncArvioBtn.disabled = true;
+    syncArvioBtn.textContent = 'Syncing to Profile…';
+    syncStatus.textContent = 'Updating manifest and syncing to ARVIO cloud…';
+    syncStatus.style.color = '#93c5fd';
+
+    try {
+      const res = await fetch('/api/arvio/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token: arvioSession.token,
+          profileId: currentProfileId,
+          manifestUrl: urlInput.value,
+          selectedIds,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Sync failed');
+
+      syncStatus.textContent = '✓ Successfully synced to profile ' + currentProfileId + '! Your Android TV is updated in real time.';
+      syncStatus.style.color = '#10b981';
+      statusEl.textContent = '✓ Synced to ARVIO Cloud at ' + new Date().toLocaleTimeString();
+      statusEl.style.color = '#10b981';
+    } catch (err) {
+      syncStatus.textContent = 'Sync error: ' + err.message;
+      syncStatus.style.color = '#f87171';
+    } finally {
+      syncArvioBtn.disabled = false;
+      syncArvioBtn.textContent = '⚡ Save & Sync to Profile';
+    }
+  });
+
+  // Save to Addon button
+  saveAddonBtn.addEventListener('click', () => saveProfileConfig(currentProfileId));
+
   checkboxes.forEach((b) => b.addEventListener('change', updateManifestUrl));
-  updateManifestUrl();
+  syncSessionUi();
 
   // Copy button
   copyBtn.addEventListener('click', async () => {

@@ -16,8 +16,14 @@ A standalone catalog and metadata addon designed for ARVIO and Stremio-compatibl
    - IPTV / VOD: Recently added VOD movies and series from connected Xtream/Stalker playlists (`vod:recent`, `vod:categories`).
 4. **Hybrid & Cross-Filtered Catalogs (`clientFilter`)**:
    - Cross-references curated TMDB trends and personal watchlists against local IPTV VOD or Home Server storage (`clientFilter: "vod:available"`, `clientFilter: "homeserver:available"`).
-5. **Configurator Presets**:
-   - 1-click presets: *Public Trends*, *The Streamer*, *IPTV & VOD*, *Self-Hoster & Trackers*, and *Anime & Animation*.
+5. **Direct ARVIO Account & Profile Sync**:
+   - Sign in with your ARVIO email and password directly on the configurator.
+   - Switch between your ARVIO profiles (*Himanth*, *Kids*, *Living Room*).
+   - 1-click **"⚡ Save & Sync to Profile"** automatically pushes the addon into that profile's cloud sync (`addonsByProfile[profileId]`).
+   - Your Android TV picks up the changes automatically in real time without copying URLs or reinstalling.
+6. **Persistent Dynamic Manifests**:
+   - Profile-bound manifest URLs: `/p/<profileId>/manifest.json`.
+   - Modifying row selections updates the addon dynamically. The URL stays the same; ARVIO simply fetches the new rows.
 
 ## Run Locally
 
