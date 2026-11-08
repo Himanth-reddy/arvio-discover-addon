@@ -22,7 +22,6 @@ Requires Node.js 22 or later.
 
 2. Start the development server:
    ```sh
-   cd discover-addon
    npm run dev
    ```
 
