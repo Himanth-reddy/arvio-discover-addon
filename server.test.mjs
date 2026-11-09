@@ -264,3 +264,30 @@ test('arvio direct login and cloud profile sync pushes addon directly to TV prof
   assert.equal(profileAddons[0].id, 'tv.arvio.discover');
   assert.equal(profileAddons[0].url, 'http://127.0.0.1:8787/p/prof-living-room/manifest.json');
 });
+
+test('createAddonHandler serves serverless Web Requests directly with Web Responses', async () => {
+  const { createAddonHandler } = await import('./server.mjs');
+  const handler = createAddonHandler({ token: 'test-token' });
+
+  // 1. Manifest
+  const manifestReq = new Request('https://addon.arvio.tv/manifest.json');
+  const manifestRes = await handler(manifestReq);
+  assert.equal(manifestRes.status, 200);
+  assert.equal(manifestRes.headers.get('content-type'), 'application/json; charset=utf-8');
+  assert.equal(manifestRes.headers.get('access-control-allow-origin'), '*');
+  const manifestJson = await manifestRes.json();
+  assert.equal(manifestJson.id, 'tv.arvio.discover');
+
+  // 2. Configure page HTML
+  const configReq = new Request('https://addon.arvio.tv/configure');
+  const configRes = await handler(configReq);
+  assert.equal(configRes.status, 200);
+  assert.match(configRes.headers.get('content-type'), /text\/html/);
+  assert.match(await configRes.text(), /ARVIO Discover/);
+
+  // 3. CORS preflight OPTIONS
+  const optionsReq = new Request('https://addon.arvio.tv/manifest.json', { method: 'OPTIONS' });
+  const optionsRes = await handler(optionsReq);
+  assert.equal(optionsRes.status, 204);
+  assert.equal(optionsRes.headers.get('access-control-allow-origin'), '*');
+});

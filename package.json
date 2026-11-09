@@ -8,5 +8,9 @@
     "dev": "node --watch server.mjs --dev",
     "start": "node server.mjs",
     "test": "node --test"
+  },
+  "dependencies": {
+    "@netlify/blobs": "^8.0.0",
+    "@netlify/functions": "^2.8.2"
   }
 }

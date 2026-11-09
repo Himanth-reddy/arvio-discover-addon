@@ -366,15 +366,17 @@ class RequestError extends Error {
   }
 }
 
-function json(response, status, data, maxAge = 0) {
-  response.writeHead(status, {
-    'Content-Type': 'application/json; charset=utf-8',
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': '*',
-    'Access-Control-Allow-Methods': 'GET, OPTIONS',
-    'Cache-Control': maxAge ? `public, max-age=${maxAge}` : 'no-store',
+function json(payload, status = 200, maxAge = 0) {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Headers': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Cache-Control': maxAge ? `public, max-age=${maxAge}` : 'no-store',
+    },
   });
-  response.end(JSON.stringify(data));
 }
 
 function image(path, size) {
@@ -422,7 +424,11 @@ export function manifest(selected) {
 
 async function readJson(request) {
   let body = '';
-  for await (const chunk of request) body += chunk;
+  if (typeof request.text === 'function') {
+    body = await request.text();
+  } else {
+    for await (const chunk of request) body += chunk;
+  }
   try {
     return JSON.parse(body || '{}');
   } catch {
@@ -430,7 +436,7 @@ async function readJson(request) {
   }
 }
 
-export function createAddonServer({
+export function createAddonHandler({
   token = process.env.TMDB_READ_TOKEN,
   fetcher = fetch,
   networkAddress,
@@ -439,6 +445,46 @@ export function createAddonServer({
   arvioAnonKey = process.env.ARVIO_APP_ANON_KEY || '',
 } = {}) {
   const cache = new Map();
+
+  let blobsStorePromise = null;
+  async function getBlobsStore() {
+    if (blobsStorePromise) return blobsStorePromise;
+    blobsStorePromise = (async () => {
+      try {
+        const { getStore } = await import('@netlify/blobs');
+        return getStore('addon-configs');
+      } catch {
+        return null;
+      }
+    })();
+    return blobsStorePromise;
+  }
+
+  async function getProfileConfig(profileId) {
+    const blobs = await getBlobsStore();
+    if (blobs) {
+      try {
+        const val = await blobs.get(profileId, { type: 'json' });
+        if (Array.isArray(val)) return val;
+        if (val?.selectedIds) return val.selectedIds;
+      } catch {
+        // Fall back to configStore
+      }
+    }
+    return configStore.get(profileId);
+  }
+
+  async function setProfileConfig(profileId, selectedIds) {
+    configStore.set(profileId, selectedIds);
+    const blobs = await getBlobsStore();
+    if (blobs) {
+      try {
+        await blobs.setJSON(profileId, selectedIds);
+      } catch (e) {
+        console.warn('Failed to save to Netlify Blobs:', e.message);
+      }
+    }
+  }
 
   async function tmdb(path) {
     if (!token) throw new RequestError(503, 'Set TMDB_READ_TOKEN to enable catalogs and metadata.');
@@ -477,15 +523,17 @@ export function createAddonServer({
     }
   }
 
-  return createServer(async (request, response) => {
+  return async function handleRequest(request) {
     try {
       if (request.method === 'OPTIONS') {
-        response.writeHead(204, {
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Headers': '*',
-          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+        return new Response(null, {
+          status: 204,
+          headers: {
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Headers': '*',
+            'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+          },
         });
-        return response.end();
       }
 
       const url = new URL(request.url, 'http://localhost');
@@ -498,14 +546,15 @@ export function createAddonServer({
         if (parts[1] === 'config' && parts[2]) {
           const profileId = parts[2];
           if (request.method === 'GET') {
-            const selectedIds = configStore.get(profileId) || catalogs.filter((r) => r.isDefault).map((r) => r.id);
-            return json(response, 200, { profileId, selectedIds });
+            const stored = await getProfileConfig(profileId);
+            const selectedIds = stored || catalogs.filter((r) => r.isDefault).map((r) => r.id);
+            return json({ profileId, selectedIds }, 200);
           }
           if (request.method === 'POST') {
             const body = await readJson(request);
             const selectedIds = Array.isArray(body.selectedIds) ? body.selectedIds : [];
-            configStore.set(profileId, selectedIds);
-            return json(response, 200, { ok: true, profileId, selectedIds, count: selectedIds.length });
+            await setProfileConfig(profileId, selectedIds);
+            return json({ ok: true, profileId, selectedIds, count: selectedIds.length }, 200);
           }
         }
 
@@ -559,13 +608,13 @@ export function createAddonServer({
             activeProfileId = 'default';
           }
 
-          return json(response, 200, {
+          return json({
             ok: true,
             token,
             user: { id: user.id, email: user.email },
             profiles,
             activeProfileId,
-          });
+          }, 200);
         }
 
         // POST /api/arvio/sync
@@ -574,7 +623,7 @@ export function createAddonServer({
           if (!token || !profileId) throw new RequestError(400, 'Token and profileId are required.');
 
           if (Array.isArray(selectedIds)) {
-            configStore.set(profileId, selectedIds);
+            await setProfileConfig(profileId, selectedIds);
           }
 
           // Pull current sync state from ARVIO
@@ -643,20 +692,26 @@ export function createAddonServer({
             throw new RequestError(pushRes.status || 500, pushData.reason || 'ARVIO cloud sync rejected update.');
           }
 
-          return json(response, 200, {
+          return json({
             ok: true,
             profileId,
             manifestUrl,
             syncedAt: Date.now(),
-          });
+          }, 200);
         }
 
         throw new RequestError(404, 'API endpoint not found.');
       }
 
       if (request.method !== 'GET') {
-        response.setHeader('Allow', 'GET, POST, OPTIONS');
-        throw new RequestError(405, 'Use GET.');
+        return new Response(JSON.stringify({ error: 'Use GET.' }), {
+          status: 405,
+          headers: {
+            'Content-Type': 'application/json; charset=utf-8',
+            Allow: 'GET, POST, OPTIONS',
+            'Access-Control-Allow-Origin': '*',
+          },
+        });
       }
 
       // --- Scope Resolution (Profile / Inline / Default) ---
@@ -666,11 +721,11 @@ export function createAddonServer({
       if (parts[0] === 'p' && parts[1]) {
         currentProfileId = parts[1];
         parts.splice(0, 2);
-        selectedIds = configStore.get(currentProfileId);
+        selectedIds = await getProfileConfig(currentProfileId);
       } else if (parts[0] === 'c' && parts[1]) {
         selectedIds = parts.splice(0, 2)[1]?.split(',');
       } else {
-        selectedIds = configStore.get('default');
+        selectedIds = await getProfileConfig('default');
       }
 
       const selected = selectedIds
@@ -683,14 +738,20 @@ export function createAddonServer({
 
       // Configure UI
       if (parts.length === 1 && ['', 'configure'].includes(parts[0])) {
-        response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
-        const networkOrigin = networkAddress ? `http://${networkAddress}:${request.socket.localPort}` : '';
-        return response.end(configurePage(catalogs, selected, Boolean(token), networkOrigin, currentProfileId));
+        const netOrigin = networkAddress ? `http://${networkAddress}:${url.port || (url.protocol === 'https:' ? 443 : 80)}` : '';
+        return new Response(configurePage(catalogs, selected, Boolean(token), netOrigin, currentProfileId), {
+          status: 200,
+          headers: {
+            'Content-Type': 'text/html; charset=utf-8',
+            'Cache-Control': 'no-store',
+            'Access-Control-Allow-Origin': '*',
+          },
+        });
       }
 
       // Manifest
       if (parts.length === 1 && parts[0] === 'manifest.json') {
-        return json(response, 200, manifest(selected), 300);
+        return json(manifest(selected), 200, 300);
       }
 
       // Catalog & Meta resources
@@ -705,7 +766,7 @@ export function createAddonServer({
               `This row uses client-side delegation (${catalog.clientDelegate || 'private'}). ARVIO resolves it locally on-device.`
             );
           }
-          if (catalog) return json(response, 200, { metas: await loadCatalog(catalog) }, 300);
+          if (catalog) return json({ metas: await loadCatalog(catalog) }, 200, 300);
         }
 
         if (resource === 'meta' && id.startsWith(prefix) && /^[1-9]\d{0,9}$/.test(id.slice(prefix.length))) {
@@ -713,15 +774,76 @@ export function createAddonServer({
           const title = await tmdb(`/${providerType}/${id.slice(prefix.length)}?append_to_response=external_ids`);
           const meta = title && metadata(title, type);
           if (!meta) throw new RequestError(502, 'TMDB returned invalid metadata.');
-          return json(response, 200, { meta }, 3600);
+          return json({ meta }, 200, 3600);
         }
       }
 
       throw new RequestError(404, 'Resource not found.');
     } catch (error) {
-      if (error instanceof URIError) return json(response, 400, { error: 'Invalid URL encoding.' });
+      if (error instanceof URIError) return json({ error: 'Invalid URL encoding.' }, 400);
       const status = error instanceof RequestError ? error.status : 500;
-      return json(response, status, { error: status === 500 ? 'Unexpected server error.' : error.message });
+      return json({ error: status === 500 ? 'Unexpected server error.' : error.message }, status);
+    }
+  };
+}
+
+async function nodeToWebRequest(nodeReq) {
+  const protocol = nodeReq.headers['x-forwarded-proto'] || (nodeReq.socket?.encrypted ? 'https' : 'http');
+  const host = nodeReq.headers['x-forwarded-host'] || nodeReq.headers.host || 'localhost';
+  const url = new URL(nodeReq.url, `${protocol}://${host}`);
+
+  const headers = new Headers();
+  for (const [key, value] of Object.entries(nodeReq.headers)) {
+    if (value !== undefined) {
+      if (Array.isArray(value)) {
+        for (const v of value) headers.append(key, v);
+      } else {
+        headers.set(key, value);
+      }
+    }
+  }
+
+  let body = null;
+  if (!['GET', 'HEAD'].includes(nodeReq.method)) {
+    const chunks = [];
+    for await (const chunk of nodeReq) {
+      chunks.push(chunk);
+    }
+    if (chunks.length > 0) {
+      body = Buffer.concat(chunks);
+    }
+  }
+
+  return new Request(url, {
+    method: nodeReq.method,
+    headers,
+    body,
+    duplex: 'half',
+  });
+}
+
+async function webToNodeResponse(webRes, nodeRes) {
+  nodeRes.statusCode = webRes.status;
+  webRes.headers.forEach((value, key) => {
+    nodeRes.setHeader(key, value);
+  });
+  const buf = Buffer.from(await webRes.arrayBuffer());
+  nodeRes.end(buf);
+}
+
+export function createAddonServer(options = {}) {
+  const handler = createAddonHandler(options);
+  return createServer(async (nodeReq, nodeRes) => {
+    try {
+      const webReq = await nodeToWebRequest(nodeReq);
+      const webRes = await handler(webReq);
+      await webToNodeResponse(webRes, nodeRes);
+    } catch (err) {
+      if (!nodeRes.headersSent) {
+        nodeRes.statusCode = 500;
+        nodeRes.setHeader('Content-Type', 'application/json; charset=utf-8');
+        nodeRes.end(JSON.stringify({ error: err.message || 'Internal Server Error' }));
+      }
     }
   });
 }
