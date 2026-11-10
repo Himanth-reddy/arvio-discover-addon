@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { networkInterfaces } from 'node:os';
 import { loadEnvFile } from 'node:process';
@@ -5,6 +6,202 @@ import { pathToFileURL } from 'node:url';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { configurePage } from './configure.mjs';
+
+function shortHash(value) {
+  return createHash('sha256').update(String(value || '')).digest('hex').slice(0, 10);
+}
+
+function javaUrlEncode(value) {
+  return encodeURIComponent(String(value ?? '')).replace(/%20/g, '+');
+}
+
+function sanitizeCustomCatalog(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const id = typeof raw.id === 'string' ? raw.id.trim() : '';
+  const type = typeof raw.type === 'string' ? raw.type.trim() : '';
+  const name = typeof raw.name === 'string' ? raw.name.trim() : '';
+  const clientDelegate = typeof raw.clientDelegate === 'string' ? raw.clientDelegate.trim() : '';
+  if (!id || !/^[\w.:-]{1,80}$/.test(id)) return null;
+  if (!['movie', 'series'].includes(type)) return null;
+  if (!name) return null;
+  if (!clientDelegate || !/^(trakt|simkl|homeserver|hybrid|vod):/i.test(clientDelegate) || clientDelegate.includes('#')) {
+    return null;
+  }
+  const clientFilter = typeof raw.clientFilter === 'string' && raw.clientFilter.trim()
+    ? raw.clientFilter.trim().slice(0, 512)
+    : undefined;
+  return {
+    id,
+    type,
+    name: name.slice(0, 120),
+    category: typeof raw.category === 'string' && raw.category.trim() ? raw.category.trim() : 'homeserver',
+    description: typeof raw.description === 'string' ? raw.description.trim().slice(0, 240) : '',
+    ...(raw.serverName ? { serverName: String(raw.serverName).slice(0, 80) } : {}),
+    ...(raw.libraryName ? { libraryName: String(raw.libraryName).slice(0, 80) } : {}),
+    clientDelegate,
+    ...(clientFilter ? { clientFilter } : {}),
+    requiresDelegate: true,
+  };
+}
+
+export function normalizeStoredProfileConfig(value) {
+  if (!value) return null;
+  if (Array.isArray(value)) {
+    return { selectedIds: value.map(String), catalogs: [], snapshotMeta: null };
+  }
+  if (typeof value === 'object' && Array.isArray(value.selectedIds)) {
+    const customCatalogs = Array.isArray(value.catalogs)
+      ? value.catalogs.map(sanitizeCustomCatalog).filter(Boolean)
+      : [];
+    return {
+      selectedIds: value.selectedIds.map(String),
+      catalogs: customCatalogs,
+      snapshotMeta: value.snapshotMeta && typeof value.snapshotMeta === 'object' ? value.snapshotMeta : null,
+    };
+  }
+  return null;
+}
+
+export function extractProfileSnapshot(payload, profileId) {
+  const root = payload && typeof payload === 'object' ? payload : {};
+  const pid = String(profileId || 'default');
+
+  const traktTok = root.traktTokens && typeof root.traktTokens === 'object' ? root.traktTokens[pid] : null;
+  const traktActive = Boolean(
+    traktTok &&
+    typeof traktTok === 'object' &&
+    String(traktTok.accessToken || traktTok.access_token || '').trim()
+  );
+
+  const simklDirect = root.simklTokens && typeof root.simklTokens === 'object' ? root.simklTokens[pid] : null;
+  const syncSelection = root.mdbListSyncByProfile && typeof root.mdbListSyncByProfile === 'object'
+    ? root.mdbListSyncByProfile[pid]
+    : null;
+  const simklRawToken = String(
+    simklDirect?.access_token ||
+    simklDirect?.accessToken ||
+    syncSelection?.simklAccessToken ||
+    ''
+  ).trim();
+  const simklActive = Boolean(
+    simklRawToken &&
+    !simklRawToken.startsWith('simkl_at_') &&
+    !simklRawToken.startsWith('simkl_session_')
+  );
+
+  // Inspect IPTV / VOD playlists (expose only safe count and display names, never URLs or credentials)
+  const iptv = root.iptvByProfile && typeof root.iptvByProfile === 'object' ? root.iptvByProfile[pid] : null;
+  let iptvPlaylists = [];
+  if (iptv && typeof iptv === 'object') {
+    let rawPlaylists = iptv.playlists;
+    if (typeof rawPlaylists === 'string') {
+      try { rawPlaylists = JSON.parse(rawPlaylists); } catch { rawPlaylists = []; }
+    }
+    if (Array.isArray(rawPlaylists)) {
+      iptvPlaylists = rawPlaylists.filter((p) => p && typeof p === 'object');
+    }
+  }
+  const hasM3uOrPortal = Boolean(
+    iptv &&
+    typeof iptv === 'object' &&
+    (String(iptv.m3uUrl || '').trim() ||
+      (Array.isArray(iptv.portals) && iptv.portals.length > 0) ||
+      (Array.isArray(iptv.xtreamPortals) && iptv.xtreamPortals.length > 0))
+  );
+  const vodPlaylistNames = iptvPlaylists
+    .map((p) => String(p.name || p.title || '').trim())
+    .filter(Boolean)
+    .slice(0, 6);
+  const vodActive = iptvPlaylists.length > 0 || hasM3uOrPortal;
+
+  // Inspect Home Server connections + enabled libraries (never expose serverUrl, tokens, or passwords)
+  const profileSettings = root.profileSettingsById && typeof root.profileSettingsById === 'object'
+    ? root.profileSettingsById[pid]
+    : null;
+  let parsedConnections = [];
+  const rawHsJson = profileSettings?.homeServerConnectionJson;
+  if (typeof rawHsJson === 'string' && rawHsJson.trim()) {
+    try {
+      const parsed = JSON.parse(rawHsJson);
+      if (Array.isArray(parsed)) parsedConnections = parsed;
+      else if (parsed && Array.isArray(parsed.connections)) parsedConnections = parsed.connections;
+      else if (parsed && typeof parsed === 'object') parsedConnections = [parsed];
+    } catch {
+      parsedConnections = [];
+    }
+  } else if (Array.isArray(root.homeServers)) {
+    parsedConnections = root.homeServers;
+  }
+
+  const homeServers = [];
+  const homeServerCatalogs = [];
+  const seenServerKeys = new Set();
+
+  for (const conn of parsedConnections) {
+    if (!conn || typeof conn !== 'object' || conn.enabled === false) continue;
+    const serverUrl = String(conn.serverUrl || conn.url || '').trim();
+    const token = String(conn.accessToken || conn.token || '').trim();
+    if (!serverUrl && !token) continue;
+
+    const serverKind = String(conn.serverKind || conn.type || 'SERVER').trim().toUpperCase();
+    const serverKey = String(conn.serverId || conn.connectionId || conn.id || '').trim() || `${serverKind}:${serverUrl}`;
+    if (!serverKey || seenServerKeys.has(serverKey)) continue;
+    seenServerKeys.add(serverKey);
+
+    const serverName = String(conn.displayName || conn.serverName || conn.name || 'Home Server').trim() || 'Home Server';
+    const rawCols = Array.isArray(conn.collections) ? conn.collections : [];
+    const safeCols = [];
+
+    for (const col of rawCols) {
+      if (!col || typeof col !== 'object' || col.enabled === false) continue;
+      const colId = String(col.id || '').trim();
+      if (!colId) continue;
+      const colName = String(col.name || col.title || 'Library').trim() || 'Library';
+      const rawType = String(col.type || col.collectionType || '').trim();
+      const normType = rawType.toLowerCase();
+      const isSeries = ['series', 'tv', 'tvshows', 'show'].includes(normType);
+      const manifestType = isSeries ? 'series' : 'movie';
+      const delegateType = isSeries ? 'tv' : 'movie';
+
+      const sourceRef = `home_server_catalog|${[serverKey, colId, rawType].map(javaUrlEncode).join('|')}`;
+      const catalogId = `hs_${shortHash(`${serverKey}|${colId}|${rawType}`)}`;
+      safeCols.push({ id: colId, name: colName, type: rawType || manifestType, catalogId });
+
+      homeServerCatalogs.push({
+        id: catalogId,
+        type: manifestType,
+        name: colName.toLowerCase().startsWith(serverName.toLowerCase()) ? colName : `${serverName} · ${colName}`,
+        category: 'homeserver',
+        serverName,
+        libraryName: colName,
+        description: `${serverKind} library "${colName}" from ${serverName} (profile snapshot).`,
+        clientDelegate: `homeserver:library?type=${delegateType}&source=${encodeURIComponent(sourceRef)}`,
+        requiresDelegate: true,
+      });
+    }
+
+    homeServers.push({
+      serverKey,
+      serverName,
+      serverKind,
+      collections: safeCols,
+    });
+  }
+
+  return {
+    profileId: pid,
+    snapshotAt: Number(root.updatedAt || Date.now()),
+    trakt: { active: traktActive },
+    simkl: { active: simklActive },
+    vod: {
+      active: vodActive,
+      playlistCount: iptvPlaylists.length || (hasM3uOrPortal ? 1 : 0),
+      playlistNames: vodPlaylistNames,
+    },
+    homeServers,
+    homeServerCatalogs,
+  };
+}
 
 export class ConfigStore {
   constructor(filePath) {
@@ -18,7 +215,8 @@ export class ConfigStore {
     try {
       const data = JSON.parse(readFileSync(this.filePath, 'utf-8'));
       for (const [id, value] of Object.entries(data)) {
-        this.configs.set(id, Array.isArray(value) ? value : value?.selectedIds || []);
+        const normalized = normalizeStoredProfileConfig(value);
+        if (normalized) this.configs.set(id, normalized);
       }
     } catch {
       // file might not exist yet, that's fine
@@ -37,12 +235,15 @@ export class ConfigStore {
   }
 
   get(profileId) {
-    return this.configs.get(profileId);
+    return this.configs.get(profileId) || null;
   }
 
-  set(profileId, selectedIds) {
-    this.configs.set(profileId, selectedIds);
-    this.save();
+  set(profileId, value) {
+    const normalized = normalizeStoredProfileConfig(value);
+    if (normalized) {
+      this.configs.set(profileId, normalized);
+      this.save();
+    }
   }
 }
 
@@ -464,25 +665,41 @@ export function createAddonHandler({
     if (blobs) {
       try {
         const val = await blobs.get(profileId, { type: 'json' });
-        if (Array.isArray(val)) return val;
-        if (val?.selectedIds) return val.selectedIds;
+        const normalized = normalizeStoredProfileConfig(val);
+        if (normalized) return normalized;
       } catch {
         // Fall back to configStore
       }
     }
-    return configStore.get(profileId);
+    return normalizeStoredProfileConfig(configStore.get(profileId));
   }
 
-  async function setProfileConfig(profileId, selectedIds) {
-    configStore.set(profileId, selectedIds);
+  async function setProfileConfig(profileId, config) {
+    const normalized = normalizeStoredProfileConfig(config) || { selectedIds: [], catalogs: [], snapshotMeta: null };
+    configStore.set(profileId, normalized);
     const blobs = await getBlobsStore();
     if (blobs) {
       try {
-        await blobs.setJSON(profileId, selectedIds);
+        await blobs.setJSON(profileId, normalized);
       } catch (e) {
         console.warn('Failed to save to Netlify Blobs:', e.message);
       }
     }
+    return normalized;
+  }
+
+  function resolveCatalogSelection(selectedIds, customCatalogs = []) {
+    const mergedById = new Map();
+    for (const row of catalogs) mergedById.set(row.id, row);
+    for (const row of customCatalogs) {
+      const safe = sanitizeCustomCatalog(row);
+      if (safe) mergedById.set(safe.id, safe);
+    }
+    if (!selectedIds) {
+      return { selected: catalogs.filter((row) => row.isDefault), mergedCatalogs: [...mergedById.values()] };
+    }
+    const selected = selectedIds.map((id) => mergedById.get(id)).filter(Boolean);
+    return { selected, mergedCatalogs: [...mergedById.values()] };
   }
 
   async function tmdb(path) {
@@ -546,14 +763,35 @@ export function createAddonHandler({
           const profileId = parts[2];
           if (request.method === 'GET') {
             const stored = await getProfileConfig(profileId);
-            const selectedIds = stored || catalogs.filter((r) => r.isDefault).map((r) => r.id);
-            return json({ profileId, selectedIds }, 200);
+            const selectedIds = stored?.selectedIds || catalogs.filter((r) => r.isDefault).map((r) => r.id);
+            return json({
+              profileId,
+              selectedIds,
+              catalogs: stored?.catalogs || [],
+              snapshotMeta: stored?.snapshotMeta || null,
+            }, 200);
           }
           if (request.method === 'POST') {
             const body = await readJson(request);
-            const selectedIds = Array.isArray(body.selectedIds) ? body.selectedIds : [];
-            await setProfileConfig(profileId, selectedIds);
-            return json({ ok: true, profileId, selectedIds, count: selectedIds.length }, 200);
+            const selectedIds = Array.isArray(body.selectedIds) ? body.selectedIds.map(String) : [];
+            const customCatalogs = Array.isArray(body.customCatalogs || body.catalogs)
+              ? (body.customCatalogs || body.catalogs).map(sanitizeCustomCatalog).filter(Boolean)
+              : [];
+            const selectedCustom = customCatalogs.filter((c) => selectedIds.includes(c.id));
+            const snapshotMeta = body.snapshotMeta && typeof body.snapshotMeta === 'object' ? body.snapshotMeta : null;
+            await setProfileConfig(profileId, {
+              selectedIds,
+              catalogs: selectedCustom,
+              snapshotMeta,
+            });
+            return json({
+              ok: true,
+              profileId,
+              selectedIds,
+              catalogs: selectedCustom,
+              snapshotMeta,
+              count: selectedIds.length,
+            }, 200);
           }
         }
 
@@ -582,6 +820,7 @@ export function createAddonHandler({
 
           let profiles = [];
           let activeProfileId = null;
+          let profileSnapshots = {};
           try {
             const syncRes = await fetcher(`${arvioBackendUrl}/account-sync-pull`, {
               method: 'POST',
@@ -597,6 +836,9 @@ export function createAddonHandler({
               const payload = syncData.payload || {};
               profiles = Array.isArray(payload.profiles) ? payload.profiles : [];
               activeProfileId = payload.activeProfileId || (profiles[0]?.id ?? null);
+              for (const p of profiles) {
+                if (p?.id) profileSnapshots[p.id] = extractProfileSnapshot(payload, p.id);
+              }
             }
           } catch (e) {
             console.warn('Could not pull account sync profiles:', e.message);
@@ -605,6 +847,7 @@ export function createAddonHandler({
           if (!profiles.length) {
             profiles = [{ id: 'default', name: user.email.split('@')[0] || 'Default' }];
             activeProfileId = 'default';
+            profileSnapshots.default = extractProfileSnapshot({}, 'default');
           }
 
           return json({
@@ -613,17 +856,44 @@ export function createAddonHandler({
             user: { id: user.id, email: user.email },
             profiles,
             activeProfileId,
+            profileSnapshots,
           }, 200);
+        }
+
+        // POST /api/arvio/snapshot (refresh current cloud profile snapshot using stored session token)
+        if (parts[1] === 'arvio' && parts[2] === 'snapshot' && request.method === 'POST') {
+          const { token } = await readJson(request);
+          if (!token) throw new RequestError(400, 'Token is required.');
+
+          const syncRes = await fetcher(`${arvioBackendUrl}/account-sync-pull`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              apikey: arvioAnonKey,
+              Authorization: `Bearer ${token}`,
+            },
+            signal: AbortSignal.timeout(10000),
+          });
+          if (!syncRes.ok) {
+            throw new RequestError(syncRes.status || 500, 'Failed to pull current ARVIO cloud snapshot.');
+          }
+          const syncData = await syncRes.json();
+          const payload = syncData.payload || {};
+          const profiles = Array.isArray(payload.profiles) && payload.profiles.length
+            ? payload.profiles
+            : [{ id: 'default', name: 'Default' }];
+          const activeProfileId = payload.activeProfileId || profiles[0]?.id || 'default';
+          const profileSnapshots = {};
+          for (const p of profiles) {
+            if (p?.id) profileSnapshots[p.id] = extractProfileSnapshot(payload, p.id);
+          }
+          return json({ ok: true, profiles, activeProfileId, profileSnapshots }, 200);
         }
 
         // POST /api/arvio/sync
         if (parts[1] === 'arvio' && parts[2] === 'sync' && request.method === 'POST') {
-          const { token, profileId, manifestUrl, selectedIds } = await readJson(request);
+          const { token, profileId, manifestUrl, selectedIds, customCatalogs, snapshotMeta } = await readJson(request);
           if (!token || !profileId) throw new RequestError(400, 'Token and profileId are required.');
-
-          if (Array.isArray(selectedIds)) {
-            await setProfileConfig(profileId, selectedIds);
-          }
 
           // Pull current sync state from ARVIO
           const pullRes = await fetcher(`${arvioBackendUrl}/account-sync-pull`, {
@@ -642,10 +912,37 @@ export function createAddonHandler({
 
           const pullData = await pullRes.json();
           const payload = pullData.payload || {};
+          const liveSnapshot = extractProfileSnapshot(payload, profileId);
+          const storedConfig = await getProfileConfig(profileId);
+          const suppliedCustom = Array.isArray(customCatalogs) ? customCatalogs.map(sanitizeCustomCatalog).filter(Boolean) : [];
+          const candidateCustom = [
+            ...(storedConfig?.catalogs || []),
+            ...(liveSnapshot.homeServerCatalogs || []),
+            ...suppliedCustom,
+          ];
           const effectiveSelectedIds = Array.isArray(selectedIds)
-            ? selectedIds
-            : (await getProfileConfig(profileId)) || catalogs.filter((r) => r.isDefault).map((r) => r.id);
-          const selectedRows = catalogs.filter(({ id }) => effectiveSelectedIds.includes(id));
+            ? selectedIds.map(String)
+            : (storedConfig?.selectedIds || catalogs.filter((r) => r.isDefault).map((r) => r.id));
+          const { selected: selectedRows } = resolveCatalogSelection(effectiveSelectedIds, candidateCustom);
+          const selectedCustom = selectedRows.filter((row) => !catalogs.some((builtIn) => builtIn.id === row.id));
+          const effectiveSnapshotMeta = snapshotMeta && typeof snapshotMeta === 'object'
+            ? snapshotMeta
+            : {
+                snapshotAt: liveSnapshot.snapshotAt,
+                trakt: liveSnapshot.trakt,
+                simkl: liveSnapshot.simkl,
+                vod: liveSnapshot.vod,
+                homeServers: liveSnapshot.homeServers,
+              };
+
+          if (Array.isArray(selectedIds) || selectedCustom.length > 0) {
+            await setProfileConfig(profileId, {
+              selectedIds: selectedRows.map((r) => r.id),
+              catalogs: selectedCustom,
+              snapshotMeta: effectiveSnapshotMeta,
+            });
+          }
+
           const selectedManifest = manifest(selectedRows);
           const now = Date.now();
           const baseUrl = String(manifestUrl || '').replace(/\/manifest\.json(\?.*)?$/i, '').replace(/\/+$/, '');
@@ -773,20 +1070,21 @@ export function createAddonHandler({
       // --- Scope Resolution (Profile / Inline / Default) ---
       let currentProfileId = 'default';
       let selectedIds = null;
+      let storedProfileConfig = null;
 
       if (parts[0] === 'p' && parts[1]) {
         currentProfileId = parts[1];
         parts.splice(0, 2);
-        selectedIds = await getProfileConfig(currentProfileId);
+        storedProfileConfig = await getProfileConfig(currentProfileId);
+        selectedIds = storedProfileConfig?.selectedIds || null;
       } else if (parts[0] === 'c' && parts[1]) {
         selectedIds = parts.splice(0, 2)[1]?.split(',');
       } else {
-        selectedIds = await getProfileConfig('default');
+        storedProfileConfig = await getProfileConfig('default');
+        selectedIds = storedProfileConfig?.selectedIds || null;
       }
 
-      const selected = selectedIds
-        ? catalogs.filter(({ id }) => selectedIds.includes(id))
-        : catalogs.filter((row) => row.isDefault);
+      const { selected } = resolveCatalogSelection(selectedIds, storedProfileConfig?.catalogs || []);
 
       if (!selected.length || (selectedIds && selected.length !== selectedIds.length)) {
         throw new RequestError(404, 'Unknown catalog selection.');
@@ -795,7 +1093,7 @@ export function createAddonHandler({
       // Configure UI
       if (parts.length === 1 && ['', 'configure'].includes(parts[0])) {
         const netOrigin = networkAddress ? `http://${networkAddress}:${url.port || (url.protocol === 'https:' ? 443 : 80)}` : '';
-        return new Response(configurePage(catalogs, selected, Boolean(token), netOrigin, currentProfileId), {
+        return new Response(configurePage(catalogs, selected, Boolean(token), netOrigin, currentProfileId, storedProfileConfig), {
           status: 200,
           headers: {
             'Content-Type': 'text/html; charset=utf-8',
