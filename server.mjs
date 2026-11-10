@@ -328,19 +328,18 @@ export const catalogs = [
     type: 'movie',
     name: 'Trending Movies · Available on IPTV',
     category: 'hybrid',
-    description: 'Weekly trending films filtered to only titles available in your IPTV VOD.',
-    clientDelegate: 'hybrid:trending?source=tmdb&filter=vod&type=movie',
-    clientFilter: 'vod:available',
-    requiresDelegate: true,
+    description: 'Weekly trending films filtered on-device to titles available in your IPTV VOD.',
+    path: '/trending/movie/week',
+    clientFilter: '{"availableOn":"vod"}',
   },
   {
     id: 'hybrid-watchlist-vod-movies',
     type: 'movie',
     name: 'Trakt Watchlist · Available on IPTV',
     category: 'hybrid',
-    description: 'Trakt Watchlist titles matched with your connected IPTV VOD library.',
-    clientDelegate: 'hybrid:watchlist?tracker=trakt&filter=vod&type=movie',
-    clientFilter: 'vod:available',
+    description: 'Trakt Watchlist titles matched on-device with your connected IPTV VOD library.',
+    clientDelegate: 'hybrid:watchlist?tracker=trakt&type=movie',
+    clientFilter: '{"availableOn":"vod"}',
     requiresDelegate: true,
   },
   {
@@ -348,9 +347,9 @@ export const catalogs = [
     type: 'movie',
     name: 'Trakt Watchlist · On Home Server',
     category: 'hybrid',
-    description: 'Trakt Watchlist movies verified to be downloaded on your Jellyfin/Emby/Plex server.',
-    clientDelegate: 'hybrid:watchlist?tracker=trakt&filter=homeserver&type=movie',
-    clientFilter: 'homeserver:available',
+    description: 'Trakt Watchlist movies verified on-device to be on your Jellyfin/Emby/Plex server.',
+    clientDelegate: 'hybrid:watchlist?tracker=trakt&type=movie',
+    clientFilter: '{"availableOn":"homeserver"}',
     requiresDelegate: true,
   },
 ];
@@ -643,19 +642,62 @@ export function createAddonHandler({
 
           const pullData = await pullRes.json();
           const payload = pullData.payload || {};
+          const effectiveSelectedIds = Array.isArray(selectedIds)
+            ? selectedIds
+            : (await getProfileConfig(profileId)) || catalogs.filter((r) => r.isDefault).map((r) => r.id);
+          const selectedRows = catalogs.filter(({ id }) => effectiveSelectedIds.includes(id));
+          const selectedManifest = manifest(selectedRows);
+          const now = Date.now();
+          const baseUrl = String(manifestUrl || '').replace(/\/manifest\.json(\?.*)?$/i, '').replace(/\/+$/, '');
+          const normalizedMetaKey = baseUrl.toLowerCase();
 
           // Update addonsByProfile[profileId]
           const addonsByProfile = payload.addonsByProfile || {};
           const profileAddons = Array.isArray(addonsByProfile[profileId]) ? [...addonsByProfile[profileId]] : [];
+          const rootAddons = Array.isArray(payload.addons) ? [...payload.addons] : [];
 
-          const existingIndex = profileAddons.findIndex((a) => a.id === 'tv.arvio.discover');
+          const matchesDiscoverAddon = (a) => a && (
+            a.id === 'tv.arvio.discover' ||
+            String(a.id || '').startsWith('tv.arvio.discover_') ||
+            a.url === manifestUrl ||
+            a.manifestUrl === manifestUrl
+          );
+          const existingProfileEntry = profileAddons.find(matchesDiscoverAddon);
+          const existingRootEntry = rootAddons.find(matchesDiscoverAddon);
+          const existingEntry = existingProfileEntry || existingRootEntry;
+          const discoverId = existingEntry?.id || 'tv.arvio.discover';
+
           const discoverEntry = {
-            id: 'tv.arvio.discover',
-            name: 'ARVIO Discover',
+            ...(existingEntry || {}),
+            id: discoverId,
+            name: existingEntry?.name || 'ARVIO Discover',
+            version: selectedManifest.version,
+            description: selectedManifest.description,
             url: manifestUrl,
-            version: '1.0.0',
+            manifestUrl,
+            transportUrl: baseUrl,
+            isInstalled: true,
+            isEnabled: existingEntry?.isEnabled ?? existingEntry?.enabled ?? true,
+            type: existingEntry?.type || 'CUSTOM',
+            runtimeKind: existingEntry?.runtimeKind || 'STREMIO',
+            installSource: existingEntry?.installSource || 'DIRECT_URL',
+            setupUpdatedAt: now,
+            metadataUpdatedAt: now,
+            catalogs: selectedManifest.catalogs,
+            resources: selectedManifest.resources,
+            types: selectedManifest.types,
+            idPrefixes: [prefix],
+            manifest: {
+              ...selectedManifest,
+              resources: selectedManifest.resources.map((r) =>
+                typeof r === 'string'
+                  ? { name: r, types: [], idPrefixes: null }
+                  : { name: r.name, types: r.types || [], idPrefixes: r.idPrefixes || null }
+              ),
+            },
           };
 
+          const existingIndex = profileAddons.findIndex(matchesDiscoverAddon);
           if (existingIndex >= 0) {
             profileAddons[existingIndex] = discoverEntry;
           } else {
@@ -664,16 +706,30 @@ export function createAddonHandler({
           addonsByProfile[profileId] = profileAddons;
           payload.addonsByProfile = addonsByProfile;
 
-          // Also ensure root addons has it
-          const rootAddons = Array.isArray(payload.addons) ? [...payload.addons] : [];
-          const rootIdx = rootAddons.findIndex((a) => a.id === 'tv.arvio.discover');
+          // Also ensure root addons and separate metadata cache are updated
+          const rootIdx = rootAddons.findIndex(matchesDiscoverAddon);
           if (rootIdx >= 0) {
             rootAddons[rootIdx] = discoverEntry;
           } else {
             rootAddons.push(discoverEntry);
           }
           payload.addons = rootAddons;
-          payload.addonsUpdatedAt = Date.now();
+          payload.addonsUpdatedAt = now;
+          payload.addonChanges = {
+            ...(payload.addonChanges && typeof payload.addonChanges === 'object' ? payload.addonChanges : {}),
+            [discoverId]: { removed: false, updatedAt: now },
+          };
+          if (normalizedMetaKey) {
+            payload.addonMetadataByKey = {
+              ...(payload.addonMetadataByKey && typeof payload.addonMetadataByKey === 'object' ? payload.addonMetadataByKey : {}),
+              [normalizedMetaKey]: {
+                manifest: discoverEntry.manifest,
+                catalogs: discoverEntry.catalogs,
+                resources: discoverEntry.resources,
+                metadataUpdatedAt: now,
+              },
+            };
+          }
 
           // Push updated state back to ARVIO Cloud
           const pushRes = await fetcher(`${arvioBackendUrl}/account-sync-push`, {
@@ -749,9 +805,10 @@ export function createAddonHandler({
         });
       }
 
-      // Manifest
+      // Manifest (profile-scoped manifests use no-store so live config changes apply immediately on refresh)
       if (parts.length === 1 && parts[0] === 'manifest.json') {
-        return json(manifest(selected), 200, 300);
+        const cacheSeconds = currentProfileId !== 'default' ? 0 : 300;
+        return json(manifest(selected), 200, cacheSeconds);
       }
 
       // Catalog & Meta resources
@@ -761,10 +818,11 @@ export function createAddonHandler({
         if (resource === 'catalog') {
           const catalog = selected.find((row) => row.id === id && row.type === type);
           if (catalog?.requiresDelegate) {
-            throw new RequestError(
-              403,
-              `This row uses client-side delegation (${catalog.clientDelegate || 'private'}). ARVIO resolves it locally on-device.`
-            );
+            return json({
+              metas: [],
+              clientDelegate: catalog.clientDelegate,
+              note: 'Resolved locally on-device by updated ARVIO clients.',
+            }, 200, 0);
           }
           if (catalog) return json({ metas: await loadCatalog(catalog) }, 200, 300);
         }

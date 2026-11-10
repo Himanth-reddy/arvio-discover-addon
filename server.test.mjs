@@ -68,8 +68,10 @@ test('connected tracker and home server rows declare clientDelegate in manifest 
 
   for (const { id, type } of configured.catalogs) {
     const response = await get(`${base}/catalog/${type}/${id}.json`);
-    assert.equal(response.status, 403);
+    assert.equal(response.status, 200);
     assert.equal(response.headers.get('cache-control'), 'no-store');
+    const body = await response.json();
+    assert.deepEqual(body.metas, []);
   }
 });
 
@@ -98,10 +100,16 @@ test('streaming provider catalogs resolve via TMDB discover endpoint with provid
   assert.match(queriedPaths[0], /with_watch_providers=8/);
 });
 
-test('vod and hybrid catalogs declare clientDelegate and clientFilter in manifest and block direct access', async (t) => {
+test('vod and hybrid catalogs declare clientDelegate and clientFilter in manifest and return empty fallback when direct-accessed', async (t) => {
+  const queriedPaths = [];
   const get = await start(t, {
     token: 'test-token',
-    fetcher: async () => assert.fail('A private delegated or hybrid row must not call the remote metadata provider'),
+    fetcher: async (url) => {
+      queriedPaths.push(url.pathname);
+      return Response.json({
+        results: [{ id: 101, title: 'Trending Film', poster_path: '/trend.jpg', release_date: '2025-01-01' }],
+      });
+    },
   });
 
   const base = '/c/vod-recent-movies,vod-recent-shows,hybrid-trending-vod-movies,hybrid-watchlist-vod-movies,hybrid-watchlist-server-movies';
@@ -111,7 +119,7 @@ test('vod and hybrid catalogs declare clientDelegate and clientFilter in manifes
     manifest.catalogs.map(({ id, type, clientDelegate, clientFilter }) => ({
       id,
       type,
-      clientDelegate,
+      ...(clientDelegate ? { clientDelegate } : {}),
       ...(clientFilter ? { clientFilter } : {}),
     })),
     [
@@ -128,30 +136,38 @@ test('vod and hybrid catalogs declare clientDelegate and clientFilter in manifes
       {
         id: 'hybrid-trending-vod-movies',
         type: 'movie',
-        clientDelegate: 'hybrid:trending?source=tmdb&filter=vod&type=movie',
-        clientFilter: 'vod:available',
+        clientFilter: '{"availableOn":"vod"}',
       },
       {
         id: 'hybrid-watchlist-vod-movies',
         type: 'movie',
-        clientDelegate: 'hybrid:watchlist?tracker=trakt&filter=vod&type=movie',
-        clientFilter: 'vod:available',
+        clientDelegate: 'hybrid:watchlist?tracker=trakt&type=movie',
+        clientFilter: '{"availableOn":"vod"}',
       },
       {
         id: 'hybrid-watchlist-server-movies',
         type: 'movie',
-        clientDelegate: 'hybrid:watchlist?tracker=trakt&filter=homeserver&type=movie',
-        clientFilter: 'homeserver:available',
+        clientDelegate: 'hybrid:watchlist?tracker=trakt&type=movie',
+        clientFilter: '{"availableOn":"homeserver"}',
       },
     ]
   );
 
-  for (const { id, type } of manifest.catalogs) {
+  for (const { id, type } of manifest.catalogs.filter((c) => c.id !== 'hybrid-trending-vod-movies')) {
     const response = await get(`${base}/catalog/${type}/${id}.json`);
-    assert.equal(response.status, 403);
+    assert.equal(response.status, 200);
     const body = await response.json();
-    assert.match(body.error, /client-side delegation/);
+    assert.deepEqual(body.metas, []);
+    assert.ok(body.clientDelegate);
   }
+  assert.equal(queriedPaths.length, 0);
+
+  const hybridHttpRes = await get(`${base}/catalog/movie/hybrid-trending-vod-movies.json`);
+  assert.equal(hybridHttpRes.status, 200);
+  const hybridHttpBody = await hybridHttpRes.json();
+  assert.equal(hybridHttpBody.metas.length, 1);
+  assert.equal(hybridHttpBody.metas[0].name, 'Trending Film');
+  assert.equal(queriedPaths[0], '/3/trending/movie/week');
 });
 
 test('profile-scoped configurations update dynamically without changing manifest URL', async (t) => {
@@ -257,12 +273,82 @@ test('arvio direct login and cloud profile sync pushes addon directly to TV prof
   const syncData = await syncRes.json();
   assert.equal(syncData.ok, true);
 
-  // 3. Verify pushed cloud payload contains tv.arvio.discover for the profile!
+  // 3. Verify pushed cloud payload contains full discover entry + separate metadata cache + addonChanges
   assert.equal(pushedPayloads.length, 1);
-  const profileAddons = pushedPayloads[0].addonsByProfile['prof-living-room'];
+  const pushed = pushedPayloads[0];
+  const profileAddons = pushed.addonsByProfile['prof-living-room'];
   assert.equal(profileAddons.length, 1);
   assert.equal(profileAddons[0].id, 'tv.arvio.discover');
   assert.equal(profileAddons[0].url, 'http://127.0.0.1:8787/p/prof-living-room/manifest.json');
+  assert.equal(profileAddons[0].manifestUrl, 'http://127.0.0.1:8787/p/prof-living-room/manifest.json');
+  assert.deepEqual(
+    profileAddons[0].manifest.catalogs.map((c) => c.id),
+    ['trending-movies', 'prime-movies']
+  );
+  assert.ok(profileAddons[0].setupUpdatedAt > 0);
+  assert.ok(profileAddons[0].metadataUpdatedAt > 0);
+  assert.equal(pushed.addonChanges['tv.arvio.discover'].removed, false);
+  const metadataEntry = pushed.addonMetadataByKey['http://127.0.0.1:8787/p/prof-living-room'];
+  assert.ok(metadataEntry);
+  assert.deepEqual(
+    metadataEntry.manifest.catalogs.map((c) => c.id),
+    ['trending-movies', 'prime-movies']
+  );
+});
+
+test('arvio cloud profile sync preserves existing hashed discover addon id', async (t) => {
+  const pushedPayloads = [];
+  const request = await start(t, {
+    token: 'test-token',
+    arvioBackendUrl: 'https://auth.mock.arvio',
+    arvioAnonKey: 'mock-anon-key',
+    fetcher: async (url, options) => {
+      const path = url.toString();
+      if (path.includes('/account-sync-pull')) {
+        return Response.json({
+          payload: {
+            profiles: [{ id: 'p1', name: 'TV' }],
+            activeProfileId: 'p1',
+            addonsByProfile: {
+              p1: [
+                {
+                  id: 'tv.arvio.discover_caffa292bf26',
+                  name: 'ARVIO Discover',
+                  url: 'https://arvio-addon.netlify.app/p/p1/manifest.json',
+                  isInstalled: true,
+                  isEnabled: true,
+                },
+              ],
+            },
+            addons: [],
+          },
+        });
+      }
+      if (path.includes('/account-sync-push')) {
+        pushedPayloads.push(JSON.parse(options.body).payload);
+        return Response.json({ accepted: true });
+      }
+      assert.fail(`Unexpected network call: ${path}`);
+    },
+  });
+
+  const syncRes = await request('/api/arvio/sync', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      token: 'jwt',
+      profileId: 'p1',
+      manifestUrl: 'https://arvio-addon.netlify.app/p/p1/manifest.json',
+      selectedIds: ['vod-recent-movies'],
+    }),
+  });
+  assert.equal(syncRes.status, 200);
+  assert.equal(pushedPayloads.length, 1);
+  const p1Addons = pushedPayloads[0].addonsByProfile.p1;
+  assert.equal(p1Addons.length, 1);
+  assert.equal(p1Addons[0].id, 'tv.arvio.discover_caffa292bf26');
+  assert.equal(p1Addons[0].manifest.catalogs[0].clientDelegate, 'vod:recent?type=movie');
+  assert.equal(pushedPayloads[0].addonChanges['tv.arvio.discover_caffa292bf26'].removed, false);
 });
 
 test('createAddonHandler serves serverless Web Requests directly with Web Responses', async () => {
