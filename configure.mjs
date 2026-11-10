@@ -1078,12 +1078,14 @@ export function configurePage(catalogs, selected, hasToken, networkOrigin, initi
   });
 
   // Refresh cloud snapshot handler
-  refreshSnapshotBtn.addEventListener('click', async () => {
+  async function refreshSnapshotFromServer(silent = false) {
     if (!arvioSession || !arvioSession.token) return;
     refreshSnapshotBtn.disabled = true;
     refreshSnapshotBtn.textContent = 'Refreshing…';
-    syncStatus.textContent = 'Pulling latest integrations & libraries from ARVIO Cloud…';
-    syncStatus.style.color = '#93c5fd';
+    if (!silent) {
+      syncStatus.textContent = 'Pulling latest integrations & libraries from ARVIO Cloud…';
+      syncStatus.style.color = '#93c5fd';
+    }
     try {
       const res = await fetch('/api/arvio/snapshot', {
         method: 'POST',
@@ -1103,16 +1105,22 @@ export function configurePage(catalogs, selected, hasToken, networkOrigin, initi
       renderSnapshotPanel();
       renderCards();
       updateManifestUrl();
-      syncStatus.textContent = '✓ Snapshot updated from ARVIO Cloud. Review rows below and click Save & Sync to update your addon.';
-      syncStatus.style.color = '#10b981';
+      if (!silent) {
+        syncStatus.textContent = '✓ Snapshot updated from ARVIO Cloud. Review rows below and click Save & Sync to update your addon.';
+        syncStatus.style.color = '#10b981';
+      }
     } catch (err) {
-      syncStatus.textContent = 'Snapshot error: ' + err.message;
-      syncStatus.style.color = '#f87171';
+      if (!silent) {
+        syncStatus.textContent = 'Snapshot error: ' + err.message;
+        syncStatus.style.color = '#f87171';
+      }
     } finally {
       refreshSnapshotBtn.disabled = false;
       refreshSnapshotBtn.textContent = '↻ Refresh Snapshot';
     }
-  });
+  }
+
+  refreshSnapshotBtn.addEventListener('click', () => refreshSnapshotFromServer(false));
 
   // Logout handler
   arvioLogoutBtn.addEventListener('click', () => {
@@ -1172,6 +1180,10 @@ export function configurePage(catalogs, selected, hasToken, networkOrigin, initi
   saveAddonBtn.addEventListener('click', () => saveProfileConfig(currentProfileId));
 
   syncSessionUi();
+  if (arvioSession && arvioSession.token) {
+    loadProfileConfig(currentProfileId);
+    refreshSnapshotFromServer(true);
+  }
 
   // Copy button
   copyBtn.addEventListener('click', async () => {

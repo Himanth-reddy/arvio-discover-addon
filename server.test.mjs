@@ -540,3 +540,82 @@ test('snapshot mode extracts safe per-profile integrations and serves custom Hom
   assert.equal(refreshBody.profileSnapshots['p-home'].homeServerCatalogs.length, 3);
   assert.equal(refreshBody.profileSnapshots['p-home'].homeServerCatalogs[2].name, 'Basement Jellyfin · Documentaries');
 });
+
+
+test('snapshot mode detects Android V2 SIMKL via sync provider routing and skips non-video Jellyfin collections', async (t) => {
+  const { ConfigStore } = await import('./server.mjs');
+  const payload = {
+    updatedAt: 1794322000000,
+    profiles: [
+      { id: 'p-simkl', name: 'TV Profile' },
+      { id: 'p-none', name: 'Empty Profile' },
+    ],
+    activeProfileId: 'p-simkl',
+    mdbListSyncByProfile: {
+      'p-simkl': { provider: 'SIMKL', writeToSimkl: true, simklAccessToken: null },
+      'p-none': { provider: 'NONE', writeToSimkl: false, simklAccessToken: null },
+    },
+    profileSettingsById: {
+      'p-simkl': {
+        homeServerConnectionJson: JSON.stringify({
+          connections: [
+            {
+              enabled: true,
+              serverName: 'Rouge',
+              serverKind: 'JELLYFIN',
+              serverId: '5130832fe6ab40dbab9d5d53d1715aa5',
+              serverUrl: 'https://rogue-example.invalid',
+              accessToken: 'jf-tok',
+              collections: [
+                { id: '4e985', name: 'Books', type: 'books', enabled: true },
+                { id: 'f137a', name: 'Movies', type: 'movies', enabled: true },
+                { id: '7e64e', name: 'Music', type: 'music', enabled: true },
+                { id: 'ea1ea', name: 'Playlists', type: 'playlists', enabled: true },
+                { id: 'a656b', name: 'Shows', type: 'tvshows', enabled: true },
+              ],
+            },
+          ],
+        }),
+      },
+    },
+  };
+
+  const request = await start(t, {
+    token: 'test-token',
+    configStore: new ConfigStore(),
+    arvioBackendUrl: 'https://auth.mock.arvio',
+    arvioAnonKey: 'mock-anon-key',
+    fetcher: async (url) => {
+      const p = url.toString();
+      if (p.includes('/auth-login')) {
+        return Response.json({ access_token: 'arvio-jwt', user: { id: 'u1', email: 'me@example.com' } });
+      }
+      if (p.includes('/account-sync-pull')) {
+        return Response.json({ payload });
+      }
+      assert.fail(`Unexpected fetch: ${p}`);
+    },
+  });
+
+  const loginRes = await request('/api/arvio/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'me@example.com', password: 'pw' }),
+  });
+  assert.equal(loginRes.status, 200);
+  const body = await loginRes.json();
+
+  const simklSnap = body.profileSnapshots['p-simkl'];
+  assert.equal(simklSnap.simkl.active, true);
+  assert.equal(simklSnap.trakt.active, false);
+  assert.deepEqual(
+    simklSnap.homeServerCatalogs.map((c) => [c.name, c.type]),
+    [
+      ['Rouge · Movies', 'movie'],
+      ['Rouge · Shows', 'series'],
+    ]
+  );
+
+  const noneSnap = body.profileSnapshots['p-none'];
+  assert.equal(noneSnap.simkl.active, false);
+});

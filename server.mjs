@@ -83,11 +83,26 @@ export function extractProfileSnapshot(payload, profileId) {
     syncSelection?.simklAccessToken ||
     ''
   ).trim();
-  const simklActive = Boolean(
+  const hasLegacyOrWebSimklToken = Boolean(
     simklRawToken &&
     !simklRawToken.startsWith('simkl_at_') &&
     !simklRawToken.startsWith('simkl_session_')
   );
+  // Android SIMKL V2 keeps OAuth grants device-local and syncs activation via mdbListSyncByProfile routing fields.
+  const simklRoutingActive = Boolean(
+    syncSelection &&
+    typeof syncSelection === 'object' &&
+    (
+      String(syncSelection.provider || '').trim().toUpperCase() === 'SIMKL' ||
+      syncSelection.writeToSimkl === true ||
+      [
+        syncSelection.watchlistReadMode,
+        syncSelection.continueWatchingReadMode,
+        syncSelection.watchedReadMode,
+      ].some((mode) => ['simkl', 'both'].includes(String(mode || '').trim().toLowerCase()))
+    )
+  );
+  const simklActive = hasLegacyOrWebSimklToken || simklRoutingActive;
 
   // Inspect IPTV / VOD playlists (expose only safe count and display names, never URLs or credentials)
   const iptv = root.iptvByProfile && typeof root.iptvByProfile === 'object' ? root.iptvByProfile[pid] : null;
@@ -152,6 +167,10 @@ export function extractProfileSnapshot(payload, profileId) {
     const rawCols = Array.isArray(conn.collections) ? conn.collections : [];
     const safeCols = [];
 
+    const nonVideoCollectionTypes = new Set([
+      'music', 'photos', 'homevideos', 'books', 'podcasts', 'audiobooks', 'playlists', 'livetv',
+    ]);
+
     for (const col of rawCols) {
       if (!col || typeof col !== 'object' || col.enabled === false) continue;
       const colId = String(col.id || '').trim();
@@ -159,6 +178,7 @@ export function extractProfileSnapshot(payload, profileId) {
       const colName = String(col.name || col.title || 'Library').trim() || 'Library';
       const rawType = String(col.type || col.collectionType || '').trim();
       const normType = rawType.toLowerCase();
+      if (normType && nonVideoCollectionTypes.has(normType)) continue;
       const isSeries = ['series', 'tv', 'tvshows', 'show'].includes(normType);
       const manifestType = isSeries ? 'series' : 'movie';
       const delegateType = isSeries ? 'tv' : 'movie';
